@@ -16,7 +16,7 @@ MIN_CONFIDENCE = 0.5
 class FusedSignal:
     side: Literal["buy", "sell", "hold"]
     ta_score: float
-    sentinel_score: Optional[float]
+    sentiment_score: Optional[float]
     final_score: float
     confidence: float
     ta_only_mode: bool  # LLM 폴백 여부

@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     upbit_access_key: str = ""
     upbit_secret_key: str = ""
 
-    # Claude API
-    claude_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-6"
+    # Gemini API
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
 
     # Risk Management
     risk_max_daily_loss_pct: float = 0.03

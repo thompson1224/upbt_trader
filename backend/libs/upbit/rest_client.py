@@ -69,6 +69,19 @@ class UpbitRestClient:
         df.columns = ["ts", "open", "high", "low", "close", "volume", "value"]
         return df.to_dict("records")
 
+    async def get_ticker(self, market: str) -> float | None:
+        """현재가 조회 (공개 API)."""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{UPBIT_REST_BASE}/ticker",
+                params={"markets": market},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                return float(data[0]["trade_price"])
+            return None
+
     async def get_balances(self) -> list[dict]:
         """계좌 잔고 조회."""
         headers = {"Authorization": f"Bearer {self._generate_token()}"}

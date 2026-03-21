@@ -25,8 +25,8 @@
 | `gateway` | 8000 | FastAPI REST + WebSocket |
 | `market_data` | — | Upbit WS → DB + Redis 발행 |
 | `strategy` | — | 60초 주기 신호 생성 → Redis 발행 |
-| `execution` | — | 신호 폴링 → Upbit 주문 |
-| `risk` | — | 위험관리 가드 (stub) |
+| `execution` | — | 신호 폴링 → Risk Guard → Upbit 주문 |
+| `risk` | — | 위험관리 서비스 (stub, 로직은 execution에 통합) |
 | `backtest` | — | 백테스팅 엔진 (stub) |
 | `frontend` | 3000 | Next.js 16 앱 |
 
@@ -53,7 +53,7 @@
 
 | 파일 | 설명 |
 |------|------|
-| `libs/upbit/rest_client.py` | pyupbit 래퍼 (시세, 주문, 잔고) |
+| `libs/upbit/rest_client.py` | pyupbit 래퍼 (시세, 주문, 잔고, **현재가**) |
 | `libs/upbit/websocket_client.py` | Upbit WS 클라이언트 (자동 재연결) |
 | `libs/ai/claude_client.py` | Claude API 감성 분석 (10분 캐시) |
 | `libs/config/settings.py` | pydantic-settings 환경변수 관리 |
@@ -120,7 +120,7 @@ const nextConfig: NextConfig = { output: "standalone" };
 
 #### 3. `frontend/src/app/page.tsx` 삭제
 
-- **원인**: Next.js App Router에서 `app/page.tsx`와 `app/(dashboard)/page.tsx`가 동일한 `/` URL로 충돌. `create-next-app` 기본 템플릿 페이지(Vercel 링크 포함) 삭제 후 `(dashboard)/page.tsx`가 `/`를 담당.
+- **원인**: Next.js App Router에서 `app/page.tsx`와 `app/(dashboard)/page.tsx`가 동일한 `/` URL로 충돌.
 
 #### 4. `backend/.env` — Docker 서비스명으로 호스트 수정
 
@@ -134,41 +134,96 @@ DATABASE_URL=postgresql+psycopg://trader:trader_secret@postgres:5432/upbit_trade
 REDIS_URL=redis://redis:6379/0
 ```
 
-- **원인**: Docker 컨테이너 간 통신은 서비스명으로 DNS 해석. `localhost`는 컨테이너 자신을 가리킴.
-
 #### 5. `backend/.env` — ENCRYPTION_KEY 유효한 Fernet 키로 교체
 
-```dotenv
-# 변경 전
-ENCRYPTION_KEY=change-me-fernet-key-32-bytes-base64
+- **원인**: 플레이스홀더 값은 `ValueError` 발생 → 설정 저장 500 에러.
 
-# 변경 후
-ENCRYPTION_KEY=h-b1lBh5HVD8nKT0S5YkdHdyVSOiPHmU62_xT1T-RXQ=
-```
+#### 6. backtest/risk service stub 생성
 
-- **원인**: Fernet은 URL-safe base64 인코딩된 32바이트 키가 필요. 플레이스홀더 값은 `ValueError` 발생 → 설정 저장 500 에러.
-
-#### 6. `apps/backtest_service/main.py` / `apps/risk_service/main.py` 생성
-
-- **원인**: `docker-compose.yml`에 `python -m apps.backtest_service.main` 명령이 설정되어 있으나 파일 없음 → `Restarting` 루프. 서비스 stub 생성으로 안정화.
+- **원인**: `docker-compose.yml`에 실행 명령이 있으나 파일 없음 → `Restarting` 루프.
 
 #### 7. Redis pub/sub 브릿지 구현
-
-**문제**: `market_data_service`와 `strategy_service`가 데이터를 DB에만 저장하고 Gateway WebSocket으로 전달하지 않아 프론트엔드에 실시간 데이터 미표시.
-
-**해결**: Redis pub/sub 채널을 브릿지로 사용.
 
 ```
 market_data_service  →  Redis "upbit:ticker"  →  gateway market_ws.py  →  /ws/market
 strategy_service     →  Redis "upbit:signal"  →  gateway signal_ws.py  →  /ws/signals
 ```
 
-변경 파일:
-- `apps/market_data_service/main.py`: `on_tick()` 에서 `redis.publish("upbit:ticker", ...)` 추가
-- `apps/strategy_service/main.py`: 신호 저장 후 `redis.publish("upbit:signal", ...)` 추가
-- `apps/gateway/ws/market_ws.py`: `start_redis_subscriber()` 함수 추가
-- `apps/gateway/ws/signal_ws.py`: `start_redis_subscriber()` 함수 추가
-- `apps/gateway/main.py`: lifespan에서 두 구독자 태스크 시작
+---
+
+## v0.1.2 — Risk Guard 연동 버그 수정 (2026-03-21)
+
+### 배경
+
+`execution_service`에 `PreTradeRiskGuard` import 및 호출 코드는 이미 존재했으나,
+4개 P0 버그로 인해 위험관리 로직이 실제로 동작하지 않는 상태였음.
+
+### 수정 내용
+
+#### 1. `libs/upbit/rest_client.py` — `get_ticker()` 추가
+
+```python
+async def get_ticker(self, market: str) -> float | None:
+    """현재가 조회 (공개 API)."""
+```
+
+- 실시간 현재가를 Upbit REST API에서 직접 조회
+
+#### 2. `apps/market_data_service/main.py` — market_warning upsert 수정
+
+```python
+# 변경 전: is_active만 업데이트
+set_={"is_active": True}
+
+# 변경 후: market_warning도 동기화
+set_={"is_active": True, "market_warning": "CAUTION" if ... else None}
+```
+
+- **원인**: 최초 INSERT 시에만 market_warning 설정, 이후 upsert에서 갱신 안 됨
+
+#### 3. `apps/execution_service/main.py` — P0 버그 4개 수정
+
+**Bug 1: `market_warning` bool 타입 오류**
+
+```python
+# 변경 전 (버그)
+market_warning=bool(coin_obj.market_warning)  # bool("NONE") = True → 모든 거래 차단
+
+# 변경 후
+_MARKET_WARNING_VALUES = {"CAUTION", "WARNING", "PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING"}
+market_warning=_is_market_warning(coin.market_warning)  # "NONE" → False
+```
+
+**Bug 2 & 3: `daily_pnl`, `consecutive_losses` 항상 0 고정**
+
+```python
+# 변경 전 (버그)
+daily_pnl=0.0,          # 일일 손실 한도 무력화
+consecutive_losses=0,    # 연속 손실 제한 무력화
+
+# 변경 후: _compute_risk_metrics() 단일 세션 배치 조회
+# - KST 오늘 0시 이후 매도 fill 기반 daily_pnl 계산
+# - 최근 매도 체결 20건 역순 손실 스트릭으로 consecutive_losses 계산
+```
+
+**Bug 4: `entry_price` 단위 오류**
+
+```python
+# 변경 전 (버그)
+entry_price = signal.suggested_stop_loss * (1/(1-0.03)) if ... else 0
+# fallback: krw_balance * 0.1  ← 잔고 금액을 가격으로 사용
+
+# 변경 후: 실시간 현재가 사용
+entry_price = await self.upbit.get_ticker(coin.market)
+# ticker 실패 시 즉시 "rejected" 처리 (무한 재처리 방지)
+```
+
+**추가 수정:**
+- N+1 쿼리 → 단일 세션 JOIN 배치 조회
+- UTC 기준 → `ZoneInfo("Asia/Seoul")` KST 기준으로 교정
+- ticker 실패 시 signal을 "rejected" 처리 (기존: "new" 상태 유지 → 무한 재시도)
+- 미사용 import (`date`, `func`) 제거
+- `coin_obj` 중복 DB 조회 제거
 
 ---
 
@@ -176,13 +231,13 @@ strategy_service     →  Redis "upbit:signal"  →  gateway signal_ws.py  →  
 
 | 항목 | 상태 |
 |------|------|
-| 전체 서비스 기동 | 정상 |
-| 실시간 시세 WebSocket | 정상 (Redis 브릿지 완료) |
-| 설정 페이지 키 저장 | 정상 (Fernet 키 수정) |
-| AI 신호 WebSocket | 정상 (Redis 브릿지 완료) |
-| AI 신호 생성 시작 | 최소 50개 1분봉 누적 후 (~50분) |
-| 자동 주문 실행 | 미검증 (실계좌 API 키 필요) |
-| 백테스트 UI | 미검증 |
+| 전체 서비스 기동 | ✅ 정상 |
+| 실시간 시세 WebSocket | ✅ 정상 (Redis 브릿지) |
+| AI 신호 생성 | ✅ 정상 (캔들 50개 이상 시 자동 시작) |
+| Risk Guard 연동 | ✅ 정상 (v0.1.2 수정 완료) |
+| 자동 주문 실행 | ✅ 준비 완료 (신호 생성 시 자동 동작) |
+| 설정 페이지 키 저장 | ✅ 정상 |
+| 백테스트 UI | ⚠️ 미검증 (backtest_service stub) |
 
 ---
 
@@ -190,10 +245,10 @@ strategy_service     →  Redis "upbit:signal"  →  gateway signal_ws.py  →  
 
 | 우선순위 | 항목 | 메모 |
 |----------|------|------|
-| 높음 | 자동매매 E2E 검증 | 설정 페이지에서 키 입력 후 신호→주문 흐름 확인 |
 | 높음 | `backtest_service` 실제 구현 | 현재 stub 상태 |
-| 높음 | `risk_service` 실제 구현 | guards/ 로직은 있으나 main.py stub 상태 |
+| 중간 | `daily_pnl` 정밀화 | 현재 포지션 avg_entry_price 기준 근사치, 별도 일일 스냅샷 테이블 설계 필요 |
 | 중간 | DB 마이그레이션 전략 | 현재 `create_all` 사용, Alembic으로 전환 필요 |
 | 중간 | 백테스트 UI 연동 확인 | `/backtest` 페이지 E2E |
+| 낮음 | Settings API DB 저장 구현 | 현재 os.environ 임시 저장 (`.env`로 우회 가능) |
 | 낮음 | 테스트 코드 작성 | pytest 단위 테스트 |
 | 낮음 | CI/CD | GitHub Actions |

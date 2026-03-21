@@ -131,7 +131,10 @@ async def sync_krw_markets():
                 market_warning="CAUTION" if m.get("market_event", {}).get("caution") else None,
             ).on_conflict_do_update(
                 index_elements=["market"],
-                set_={"is_active": True},
+                set_={
+                    "is_active": True,
+                    "market_warning": "CAUTION" if m.get("market_event", {}).get("caution") else None,
+                },
             )
             await db.execute(stmt)
         await db.commit()

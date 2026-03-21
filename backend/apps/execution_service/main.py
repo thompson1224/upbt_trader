@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -13,6 +14,14 @@ from libs.upbit.rest_client import UpbitRestClient
 from apps.risk_service.guards.pre_trade_guard import (
     PreTradeRiskGuard, PositionSizer, AccountState,
 )
+
+# Upbit 시장 경보 값 (이 값만 True 처리)
+_MARKET_WARNING_VALUES = {"CAUTION", "WARNING", "PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING"}
+
+
+def _is_market_warning(raw: str | None) -> bool:
+    """Upbit market_warning 문자열 → bool. "NONE"과 None은 False."""
+    return raw in _MARKET_WARNING_VALUES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +54,61 @@ class ExecutionService:
             except Exception as e:
                 logger.error("Signal poll error: %s", e)
             await asyncio.sleep(POLL_INTERVAL_SEC)
+
+    async def _compute_risk_metrics(self) -> tuple[float, int]:
+        """
+        오늘 실현손익(daily_pnl)과 연속 손실 횟수를 fills로부터 계산.
+        - daily_pnl : KST 오늘 0시 이후 매도 체결의 손익 합계
+        - consecutive_losses : 최근 매도 체결 20건 중 연속 손실 횟수
+        단일 세션으로 배치 조회해 N+1 문제 방지.
+        """
+        kst = ZoneInfo("Asia/Seoul")
+        today_start_kst = datetime.now(tz=kst).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(timezone.utc)
+
+        async with self.session_factory() as db:
+            # 오늘 KST 체결 매도 fill + 연결된 order + coin_id별 position 배치 조회
+            fills_result = await db.execute(
+                select(Fill, Order, Position)
+                .join(Order, Fill.order_id == Order.id)
+                .join(Position, Position.coin_id == Order.coin_id, isouter=True)
+                .where(Order.side == "ask")
+                .where(Fill.filled_at >= today_start_kst)
+                .order_by(Fill.filled_at.asc())
+            )
+            today_rows = fills_result.all()
+
+            # 연속 손실용: 최근 매도 체결 20건 (날짜 무관)
+            recent_result = await db.execute(
+                select(Fill, Order, Position)
+                .join(Order, Fill.order_id == Order.id)
+                .join(Position, Position.coin_id == Order.coin_id, isouter=True)
+                .where(Order.side == "ask")
+                .order_by(Fill.filled_at.desc())
+                .limit(20)
+            )
+            recent_rows = recent_result.all()
+
+        # daily_pnl: 매도가 - 평균매수가 기준 손익
+        daily_pnl = 0.0
+        for fill, order, pos in today_rows:
+            if pos and pos.avg_entry_price > 0:
+                daily_pnl += (fill.price - pos.avg_entry_price) * fill.volume - fill.fee
+
+        # consecutive_losses: 최근 체결부터 역순으로 연속 손실 카운트
+        loss_streak = 0
+        for fill, order, pos in recent_rows:
+            if pos and pos.avg_entry_price > 0:
+                trade_pnl = (fill.price - pos.avg_entry_price) * fill.volume - fill.fee
+                if trade_pnl < 0:
+                    loss_streak += 1
+                else:
+                    break
+            else:
+                break
+
+        return daily_pnl, loss_streak
 
     async def _process_new_signals(self):
         async with self.session_factory() as db:
@@ -99,25 +163,37 @@ class ExecutionService:
             if b["currency"] != "KRW"
         ) + krw_balance
 
-        # 위험 평가
-        entry_price = signal.suggested_stop_loss * (1 / (1 - 0.03)) if signal.suggested_stop_loss else 0
+        # 현재가 조회 (entry_price 기준)
+        try:
+            entry_price = await self.upbit.get_ticker(coin.market)
+        except Exception as e:
+            async with self.session_factory() as db:
+                await self._update_signal_status(db, signal, "rejected", f"Ticker fetch error: {e}")
+            logger.error("Ticker fetch failed for %s: %s", coin.market, e)
+            return
+
+        if not entry_price or entry_price <= 0:
+            async with self.session_factory() as db:
+                await self._update_signal_status(db, signal, "rejected", "Invalid ticker price")
+            logger.warning("Invalid ticker price for %s, skipping", coin.market)
+            return
+
+        # 위험 지표 계산
+        daily_pnl, consecutive_losses = await self._compute_risk_metrics()
+
         async with self.session_factory() as db:
             pos_count_result = await db.execute(
                 select(Position).where(Position.qty > 0)
             )
             open_positions = len(pos_count_result.scalars().all())
 
-        coin_obj = None
-        async with self.session_factory() as db:
-            coin_obj = await db.get(Coin, signal.coin_id)
-
         account = AccountState(
             total_equity=total_equity,
             available_krw=krw_balance,
-            daily_pnl=0.0,  # TODO: 일손익 추적
-            consecutive_losses=0,
+            daily_pnl=daily_pnl,
+            consecutive_losses=consecutive_losses,
             open_positions_count=open_positions,
-            market_warning=bool(coin_obj and coin_obj.market_warning),
+            market_warning=_is_market_warning(coin.market_warning),
         )
 
         # 수량 계산
@@ -125,7 +201,7 @@ class ExecutionService:
             stop_loss = signal.suggested_stop_loss or (entry_price * 0.97)
             qty = self.sizer.calculate_qty(
                 equity=total_equity,
-                entry_price=entry_price if entry_price > 0 else krw_balance * 0.1,
+                entry_price=entry_price,
                 stop_loss=stop_loss,
             )
             if qty <= 0:
@@ -142,9 +218,9 @@ class ExecutionService:
 
         decision = self.risk_guard.evaluate(
             side=signal.side,
-            market=coin_obj.market if coin_obj else "",
+            market=coin.market,
             suggested_qty=qty,
-            entry_price=entry_price if entry_price > 0 else krw_balance * 0.01,
+            entry_price=entry_price,
             stop_loss=signal.suggested_stop_loss,
             account=account,
         )
@@ -161,7 +237,7 @@ class ExecutionService:
         try:
             if signal.side == "buy":
                 result = await self.upbit.place_order(
-                    market=coin_obj.market,
+                    market=coin.market,
                     side="bid",
                     volume=final_qty,
                     price=None,
@@ -169,7 +245,7 @@ class ExecutionService:
                 )
             else:
                 result = await self.upbit.place_order(
-                    market=coin_obj.market,
+                    market=coin.market,
                     side="ask",
                     volume=final_qty,
                     price=None,
@@ -193,13 +269,13 @@ class ExecutionService:
 
             logger.info(
                 "Order placed: %s %s qty=%.6f uuid=%s",
-                coin_obj.market, signal.side, final_qty, result.get("uuid"),
+                coin.market, signal.side, final_qty, result.get("uuid"),
             )
 
         except Exception as e:
             async with self.session_factory() as db:
                 await self._update_signal_status(db, signal, "rejected", str(e))
-            logger.error("Order failed: %s - %s", coin_obj.market, e)
+            logger.error("Order failed: %s - %s", coin.market, e)
 
     async def _order_sync_loop(self):
         """미체결 주문 상태를 주기적으로 업비트와 동기화."""
