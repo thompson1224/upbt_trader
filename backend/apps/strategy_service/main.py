@@ -1,8 +1,12 @@
 from __future__ import annotations
 """전략 서비스 - 1분봉 수신 → 지표 계산 → Claude 감성 → 신호 생성"""
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime, timezone, timedelta
+
+import redis.asyncio as aioredis
 
 from sqlalchemy import select, desc
 
@@ -33,6 +37,8 @@ class StrategyRunner:
         self.session_factory = get_session_factory()
         self._sentiment_cache: dict[str, tuple[float, float, datetime]] = {}
         # market -> (score, confidence, updated_at)
+        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+        self._redis = aioredis.from_url(redis_url)
 
     async def run(self):
         logger.info("Strategy service started. strategy=%s", STRATEGY_ID)
@@ -152,6 +158,22 @@ class StrategyRunner:
             coin.market, signal.side, signal.final_score,
             signal.confidence, signal.ta_only_mode,
         )
+
+        # Redis로 신호 브로드캐스트
+        try:
+            await self._redis.publish("upbit:signal", json.dumps({
+                "id": db_signal.id,
+                "market": coin.market,
+                "coinId": coin.id,
+                "side": signal.side,
+                "taScore": signal.ta_score,
+                "sentimentScore": signal.sentiment_score,
+                "finalScore": signal.final_score,
+                "confidence": signal.confidence,
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            }))
+        except Exception as e:
+            logger.warning("Failed to publish signal to Redis: %s", e)
 
     async def _get_sentiment(
         self, coin: Coin, df: pd.DataFrame, ind

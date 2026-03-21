@@ -4,143 +4,185 @@
 
 ---
 
-## 완료된 작업
-
-### 1. 프로젝트 구조 설계 및 생성
+## 아키텍처 개요
 
 ```
-upbit-ai-trader/
-├── backend/
-│   ├── apps/
-│   │   ├── gateway/            # FastAPI REST + WebSocket 게이트웨이 (port 8000)
-│   │   ├── market_data_service/ # Upbit WebSocket 수집 서비스
-│   │   ├── strategy_service/   # AI 신호 생성 서비스
-│   │   ├── execution_service/  # 주문 실행 서비스
-│   │   ├── risk_service/       # 사전 위험관리
-│   │   └── backtest_service/   # 백테스팅 엔진
-│   ├── libs/
-│   │   ├── ai/                 # Claude API 클라이언트
-│   │   ├── config/             # 설정 관리 (pydantic-settings)
-│   │   ├── db/                 # SQLAlchemy 모델 + 세션
-│   │   └── upbit/              # REST + WebSocket 클라이언트
-│   ├── migrations/             # Alembic 마이그레이션
-│   ├── schemas/                # Pydantic 응답 스키마
-│   └── scripts/                # 실행 스크립트
-└── frontend/
-    └── src/
-        ├── app/                # Next.js 15 App Router 페이지
-        ├── components/         # UI 컴포넌트
-        ├── hooks/              # WebSocket 훅
-        ├── services/           # API 클라이언트
-        ├── store/              # Zustand 상태관리
-        └── types/              # TypeScript 타입
+[프론트엔드 :3000]
+      │  REST (axios)          WebSocket
+      ▼                           ▼
+[Gateway :8000]  ←── Redis pub/sub ←── [market_data_service]
+      │                                 [strategy_service]
+      ▼
+[PostgreSQL :5432]   [Redis :6379]
 ```
+
+### 서비스 목록
+
+| 서비스 | 포트 | 역할 |
+|--------|------|------|
+| `postgres` | 5432 | 메인 데이터베이스 |
+| `redis` | 6379 | 캐시 / pub-sub 브릿지 |
+| `gateway` | 8000 | FastAPI REST + WebSocket |
+| `market_data` | — | Upbit WS → DB + Redis 발행 |
+| `strategy` | — | 60초 주기 신호 생성 → Redis 발행 |
+| `execution` | — | 신호 폴링 → Upbit 주문 |
+| `risk` | — | 위험관리 가드 (stub) |
+| `backtest` | — | 백테스팅 엔진 (stub) |
+| `frontend` | 3000 | Next.js 16 앱 |
 
 ---
 
-### 2. 백엔드 구현 완료 목록
+## v0.1.0 — 초기 릴리즈 (최초 커밋)
+
+### 백엔드
 
 #### DB 모델 (SQLAlchemy 2.0 Async)
+
 | 파일 | 테이블 | 설명 |
 |------|--------|------|
-| `libs/db/models/coin.py` | `coins` | 업비트 KRW 마켓 목록 |
-| `libs/db/models/candle.py` | `candles_1m` | 1분봉 OHLCV 데이터 |
-| `libs/db/models/indicator.py` | `indicator_snapshots` | RSI/MACD/BB/EMA 스냅샷 |
-| `libs/db/models/sentiment.py` | `sentiment_snapshots` | Claude API 감성 분석 결과 |
+| `libs/db/models/coin.py` | `coins` | KRW 마켓 목록 |
+| `libs/db/models/candle.py` | `candles_1m` | 1분봉 OHLCV |
+| `libs/db/models/indicator.py` | `indicator_snapshots` | RSI/MACD/BB/EMA |
+| `libs/db/models/sentiment.py` | `sentiment_snapshots` | Claude 감성 분석 결과 |
 | `libs/db/models/signal.py` | `signals` | AI 매매 신호 |
-| `libs/db/models/order.py` | `orders`, `fills` | 주문 및 체결 내역 |
+| `libs/db/models/order.py` | `orders`, `fills` | 주문 / 체결 |
 | `libs/db/models/position.py` | `positions` | 현재 포지션 |
-| `libs/db/models/backtest.py` | `backtest_runs`, `backtest_trades`, `backtest_metrics` | 백테스트 결과 |
-
-#### 마이그레이션
-- `migrations/versions/001_initial_schema.py`: 전체 11개 테이블 DDL (인덱스 포함)
-
-#### 서비스별 구현
-| 서비스 | 파일 | 핵심 기능 |
-|--------|------|-----------|
-| Gateway | `apps/gateway/main.py` | FastAPI lifespan, DB 연결 확인, Router 등록 |
-| Gateway API | `apps/gateway/api/v1/` | markets, signals, orders, portfolio, backtests, settings |
-| Gateway WS | `apps/gateway/ws/` | market_ws, signal_ws, order_ws |
-| Market Data | `apps/market_data_service/main.py` | Upbit WS 수집, candles_1m 저장, 243개 KRW 마켓 동기화 |
-| Strategy | `apps/strategy_service/main.py` | 60초 루프, TA 계산, Claude 감성분석, 신호 융합·저장 |
-| Execution | `apps/execution_service/main.py` | 신호 폴링(5s), 위험검증, pyupbit 주문, 체결동기화(10s) |
-| Risk | `apps/risk_service/guards/pre_trade_guard.py` | 일일손실한도, 포지션한도, 킬스위치 |
-| Backtest | `apps/backtest_service/engine/backtest_engine.py` | 이벤트기반 백테스트, Walk-forward |
+| `libs/db/models/backtest.py` | `backtest_runs`, `backtest_trades`, `backtest_metrics` | 백테스트 |
 
 #### 핵심 라이브러리
+
 | 파일 | 설명 |
 |------|------|
 | `libs/upbit/rest_client.py` | pyupbit 래퍼 (시세, 주문, 잔고) |
-| `libs/upbit/websocket_client.py` | Upbit WS 클라이언트 (자동 재연결, ping/pong) |
-| `libs/ai/claude_client.py` | Claude API 감성 분석 (10분 캐시, TA fallback) |
-| `libs/config/settings.py` | pydantic-settings 기반 환경변수 관리 |
-| `libs/db/session.py` | AsyncSession factory, get_db 의존성 |
+| `libs/upbit/websocket_client.py` | Upbit WS 클라이언트 (자동 재연결) |
+| `libs/ai/claude_client.py` | Claude API 감성 분석 (10분 캐시) |
+| `libs/config/settings.py` | pydantic-settings 환경변수 관리 |
+| `libs/db/session.py` | AsyncSession factory |
 
-#### 지표 계산 (`apps/strategy_service/indicators/calculator.py`)
-- RSI (기간 14, Wilder EMA)
-- MACD (12/26/9)
-- Bollinger Bands (20/2σ, %B 포함)
-- EMA 20/50
+#### 신호 생성 파이프라인
 
-#### 신호 융합 (`apps/strategy_service/fusion/signal_fusion.py`)
 ```
-final_score = 0.6 × TA_score + 0.4 × sentiment_score
-신뢰도 = |final_score| × 100
-side: buy(>0.2) / sell(<-0.2) / hold
+Candle 200개 조회
+  → RSI(14) / MACD(12-26-9) / Bollinger Bands(20/2σ) / EMA(20,50) 계산
+  → Claude API 감성 점수 (10분 캐시)
+  → 신호 융합: final_score = 0.6×TA + 0.4×sentiment
+  → side: buy(>0.2) / sell(<-0.2) / hold
+  → DB 저장 + Redis "upbit:signal" 발행
 ```
 
----
+#### Gateway REST API
 
-### 3. 프론트엔드 구현 완료 목록
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| GET | `/api/v1/markets` | 전체 마켓 목록 |
+| GET | `/api/v1/markets/{market}/candles` | 캔들 데이터 |
+| GET | `/api/v1/signals` | AI 신호 목록 |
+| GET | `/api/v1/orders` | 주문 내역 |
+| GET | `/api/v1/positions` | 포지션 현황 |
+| GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 |
+| POST | `/api/v1/backtests/runs` | 백테스트 실행 |
+| POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 |
+| POST | `/api/v1/secrets/claude-key` | Claude 키 저장 |
+| WS | `/ws/market` | 실시간 시세 |
+| WS | `/ws/signals` | 실시간 AI 신호 |
+| WS | `/ws/orders` | 실시간 주문 |
 
-#### 페이지
-| 경로 | 파일 | 내용 |
+### 프론트엔드
+
+| 경로 | 파일 | 설명 |
 |------|------|------|
 | `/` | `app/(dashboard)/page.tsx` | 메인 대시보드 |
-| `/market` | `app/market/page.tsx` | 마켓 리스트 |
-| `/backtest` | `app/backtest/page.tsx` | 백테스트 실행 |
-| `/settings` | `app/settings/page.tsx` | 설정 페이지 |
-
-#### 컴포넌트
-| 파일 | 설명 |
-|------|------|
-| `components/dashboard/AISignalPanel.tsx` | AI 신호 패널 |
-| `components/dashboard/MarketWatchlist.tsx` | 마켓 워치리스트 |
-| `components/dashboard/PositionPanel.tsx` | 포지션 현황 |
-| `components/charts/TradingViewChart.tsx` | 캔들차트 (Lightweight Charts) |
-| `components/layout/GlobalHeader.tsx` | 글로벌 헤더 |
-| `components/layout/Sidebar.tsx` | 사이드바 네비게이션 |
-| `hooks/useUpbitWS.ts` | WebSocket 훅 |
-| `store/useMarketStore.ts` | Zustand 마켓 상태 |
-| `store/useTradeStore.ts` | Zustand 거래 상태 |
+| `/market` | `app/market/page.tsx` | 전체 마켓 |
+| `/backtest` | `app/backtest/page.tsx` | 백테스트 |
+| `/settings` | `app/settings/page.tsx` | API 키 설정 |
 
 ---
 
-### 4. 인프라 설정 (로컬, no Docker)
+## v0.1.1 — Docker 환경 구성 및 버그 수정 (2026-03-21)
 
-| 항목 | 내용 |
-|------|------|
-| PostgreSQL | Homebrew, DB: `upbit_trader`, User: `trader` |
-| Redis | Homebrew (`brew services start redis`) |
-| Python | 3.9 (시스템), venv: `backend/.venv` |
-| Node.js | 25.x |
+### 변경 내용
+
+#### 1. `docker-compose.yml` 활용
+
+기존 `docker-compose.yml` 기반으로 전체 서비스 컨테이너화 구동.
+
+#### 2. `frontend/next.config.ts` — standalone 빌드 설정 추가
+
+```ts
+// 변경 전
+const nextConfig: NextConfig = {};
+
+// 변경 후
+const nextConfig: NextConfig = { output: "standalone" };
+```
+
+- **원인**: Dockerfile이 `.next/standalone` 디렉토리를 COPY하는데 설정 누락으로 빌드 실패.
+
+#### 3. `frontend/src/app/page.tsx` 삭제
+
+- **원인**: Next.js App Router에서 `app/page.tsx`와 `app/(dashboard)/page.tsx`가 동일한 `/` URL로 충돌. `create-next-app` 기본 템플릿 페이지(Vercel 링크 포함) 삭제 후 `(dashboard)/page.tsx`가 `/`를 담당.
+
+#### 4. `backend/.env` — Docker 서비스명으로 호스트 수정
+
+```dotenv
+# 변경 전
+DATABASE_URL=postgresql+psycopg://trader:trader_secret@localhost:5432/upbit_trader
+REDIS_URL=redis://localhost:6379/0
+
+# 변경 후
+DATABASE_URL=postgresql+psycopg://trader:trader_secret@postgres:5432/upbit_trader
+REDIS_URL=redis://redis:6379/0
+```
+
+- **원인**: Docker 컨테이너 간 통신은 서비스명으로 DNS 해석. `localhost`는 컨테이너 자신을 가리킴.
+
+#### 5. `backend/.env` — ENCRYPTION_KEY 유효한 Fernet 키로 교체
+
+```dotenv
+# 변경 전
+ENCRYPTION_KEY=change-me-fernet-key-32-bytes-base64
+
+# 변경 후
+ENCRYPTION_KEY=h-b1lBh5HVD8nKT0S5YkdHdyVSOiPHmU62_xT1T-RXQ=
+```
+
+- **원인**: Fernet은 URL-safe base64 인코딩된 32바이트 키가 필요. 플레이스홀더 값은 `ValueError` 발생 → 설정 저장 500 에러.
+
+#### 6. `apps/backtest_service/main.py` / `apps/risk_service/main.py` 생성
+
+- **원인**: `docker-compose.yml`에 `python -m apps.backtest_service.main` 명령이 설정되어 있으나 파일 없음 → `Restarting` 루프. 서비스 stub 생성으로 안정화.
+
+#### 7. Redis pub/sub 브릿지 구현
+
+**문제**: `market_data_service`와 `strategy_service`가 데이터를 DB에만 저장하고 Gateway WebSocket으로 전달하지 않아 프론트엔드에 실시간 데이터 미표시.
+
+**해결**: Redis pub/sub 채널을 브릿지로 사용.
+
+```
+market_data_service  →  Redis "upbit:ticker"  →  gateway market_ws.py  →  /ws/market
+strategy_service     →  Redis "upbit:signal"  →  gateway signal_ws.py  →  /ws/signals
+```
+
+변경 파일:
+- `apps/market_data_service/main.py`: `on_tick()` 에서 `redis.publish("upbit:ticker", ...)` 추가
+- `apps/strategy_service/main.py`: 신호 저장 후 `redis.publish("upbit:signal", ...)` 추가
+- `apps/gateway/ws/market_ws.py`: `start_redis_subscriber()` 함수 추가
+- `apps/gateway/ws/signal_ws.py`: `start_redis_subscriber()` 함수 추가
+- `apps/gateway/main.py`: lifespan에서 두 구독자 태스크 시작
 
 ---
 
-### 5. 버그 수정 이력
+## 현재 상태 (2026-03-21 기준)
 
-| 이슈 | 원인 | 해결 |
-|------|------|------|
-| `TypeError: X \| None` (SQLAlchemy 모델) | Python 3.9 미지원 union syntax | `Optional[X]` 로 전환, `from __future__ import annotations` 제거 |
-| `TypeError: X \| None` (FastAPI 라우터) | 동일 | `Optional[str]` 전환 |
-| `TypeError: X \| None` (Pydantic 스키마) | 동일 | `Optional[X]` 전환 |
-| `NoSuchModuleError` (Alembic) | alembic.ini placeholder URL | `migrations/env.py` 에 `.env` 파서 추가 |
-| `InsufficientPrivilege` (PostgreSQL) | schema public 권한 없음 | `GRANT ALL ON SCHEMA public TO trader` |
-| `uvicorn: command not found` | 시스템 Python 사용 | `run_local.sh` 에서 `.venv/bin/` 명시 |
-| `numpy==2.1.2 not found` | Python 3.9 미지원 버전 | `numpy==2.0.2` 로 변경 |
-| `psycopg-binary not found` | 잘못된 패키지명 | `psycopg[binary]==3.2.4` 로 변경 |
-| `greenlet` 없음 | SQLAlchemy async 의존성 누락 | `pip install greenlet` |
-| `cannot adapt type 'dict'` (market_warning) | Upbit API 반환값 dict를 그대로 삽입 | `"CAUTION" if ... else None` 으로 수정 |
+| 항목 | 상태 |
+|------|------|
+| 전체 서비스 기동 | 정상 |
+| 실시간 시세 WebSocket | 정상 (Redis 브릿지 완료) |
+| 설정 페이지 키 저장 | 정상 (Fernet 키 수정) |
+| AI 신호 WebSocket | 정상 (Redis 브릿지 완료) |
+| AI 신호 생성 시작 | 최소 50개 1분봉 누적 후 (~50분) |
+| 자동 주문 실행 | 미검증 (실계좌 API 키 필요) |
+| 백테스트 UI | 미검증 |
 
 ---
 
@@ -148,10 +190,10 @@ side: buy(>0.2) / sell(<-0.2) / hold
 
 | 우선순위 | 항목 | 메모 |
 |----------|------|------|
-| 높음 | Upbit API 키 입력 | `.env` 에 `UPBIT_ACCESS_KEY`, `UPBIT_SECRET_KEY` 설정 필요 |
-| 높음 | Claude API 키 입력 | `.env` 에 `CLAUDE_API_KEY` 설정 필요 |
-| 중간 | 프론트엔드 API 연동 검증 | 실제 신호/주문 데이터 UI 표시 확인 |
-| 중간 | 백테스트 UI 동작 확인 | `/backtest` 페이지 E2E 테스트 |
-| 중간 | WebSocket 실시간 데이터 검증 | 대시보드 실시간 업데이트 확인 |
+| 높음 | 자동매매 E2E 검증 | 설정 페이지에서 키 입력 후 신호→주문 흐름 확인 |
+| 높음 | `backtest_service` 실제 구현 | 현재 stub 상태 |
+| 높음 | `risk_service` 실제 구현 | guards/ 로직은 있으나 main.py stub 상태 |
+| 중간 | DB 마이그레이션 전략 | 현재 `create_all` 사용, Alembic으로 전환 필요 |
+| 중간 | 백테스트 UI 연동 확인 | `/backtest` 페이지 E2E |
 | 낮음 | 테스트 코드 작성 | pytest 단위 테스트 |
-| 낮음 | CI/CD 설정 | GitHub Actions |
+| 낮음 | CI/CD | GitHub Actions |

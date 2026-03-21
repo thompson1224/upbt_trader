@@ -19,8 +19,19 @@ async def lifespan(app: FastAPI):
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Redis → WebSocket 브릿지 시작
+    import asyncio
+    tasks = [
+        asyncio.create_task(market_ws.start_redis_subscriber()),
+        asyncio.create_task(signal_ws.start_redis_subscriber()),
+    ]
+
     yield
+
     # 종료
+    for t in tasks:
+        t.cancel()
     await engine.dispose()
 
 

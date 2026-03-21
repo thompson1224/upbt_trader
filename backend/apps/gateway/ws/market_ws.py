@@ -2,8 +2,10 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Set
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 logger = logging.getLogger(__name__)
@@ -12,6 +14,30 @@ router = APIRouter()
 # 연결된 클라이언트 관리
 _connections: Set[WebSocket] = set()
 _market_data: dict = {}  # 최신 시세 캐시
+
+
+async def start_redis_subscriber():
+    """Redis pub/sub에서 ticker 수신 → WS 브로드캐스트."""
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    while True:
+        try:
+            r = aioredis.from_url(redis_url)
+            pubsub = r.pubsub()
+            await pubsub.subscribe("upbit:ticker")
+            logger.info("Market WS: Redis subscriber connected")
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        data = json.loads(message["data"])
+                        market = data.get("cd", "")
+                        if market:
+                            _market_data[market] = data
+                            await broadcast(data)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("Market Redis subscriber error: %s, retrying in 3s", e)
+            await asyncio.sleep(3)
 
 
 async def broadcast(data: dict):

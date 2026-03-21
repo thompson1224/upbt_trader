@@ -1,12 +1,37 @@
 """AI 신호 WebSocket 게이트웨이"""
 import asyncio
 import json
+import logging
+import os
 from typing import Set
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 _signal_connections: Set[WebSocket] = set()
+
+
+async def start_redis_subscriber():
+    """Redis pub/sub에서 신호 수신 → WS 브로드캐스트."""
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    while True:
+        try:
+            r = aioredis.from_url(redis_url)
+            pubsub = r.pubsub()
+            await pubsub.subscribe("upbit:signal")
+            logger.info("Signal WS: Redis subscriber connected")
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        data = json.loads(message["data"])
+                        await broadcast_signal(data)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("Signal Redis subscriber error: %s, retrying in 3s", e)
+            await asyncio.sleep(3)
 
 
 async def broadcast_signal(signal_data: dict):

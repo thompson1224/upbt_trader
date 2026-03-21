@@ -1,9 +1,12 @@
 from __future__ import annotations
 """시장 데이터 수집 서비스 - Upbit WS 구독 + DB 적재"""
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime, timezone
 
+import redis.asyncio as aioredis
 from libs.config import get_settings
 from libs.upbit.websocket_client import UpbitWebSocketClient
 from libs.upbit.rest_client import UpbitRestClient
@@ -16,6 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _candle_buffer: dict[str, list] = {}  # market -> [tick]
+_redis: aioredis.Redis | None = None
 
 
 async def on_tick(data: dict):
@@ -26,6 +30,13 @@ async def on_tick(data: dict):
     market = data.get("cd", "")
     if not market:
         return
+
+    # Redis로 실시간 ticker 전달
+    if _redis:
+        try:
+            await _redis.publish("upbit:ticker", json.dumps(data))
+        except Exception:
+            pass
 
     # 1분봉 누적
     ts = datetime.fromtimestamp(data.get("tms", 0) / 1000, tz=timezone.utc)
@@ -129,8 +140,13 @@ async def sync_krw_markets():
 
 
 async def main():
+    global _redis
     settings = get_settings()
     logger.info("Starting market data service...")
+
+    # Redis 연결
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    _redis = aioredis.from_url(redis_url)
 
     # 마켓 동기화
     markets = await sync_krw_markets()
