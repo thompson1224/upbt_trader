@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
+    # Ollama 로컬 LLM
+    ollama_base_url: str = "http://ollama:11434"
+    ollama_model: str = "qwen2.5:7b"
+
     # Risk Management
     risk_max_daily_loss_pct: float = 0.03
     risk_max_position_pct: float = 0.10

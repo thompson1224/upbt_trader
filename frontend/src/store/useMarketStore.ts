@@ -6,11 +6,13 @@ interface MarketState {
   selectedMarket: string;
   signals: SignalData[];
   isConnected: boolean;
+  minConfidence: number;
 
   updateTicker: (data: TickerData) => void;
   setSelectedMarket: (market: string) => void;
   addSignal: (signal: SignalData) => void;
   setConnected: (connected: boolean) => void;
+  setMinConfidence: (value: number) => void;
 }
 
 export const useMarketStore = create<MarketState>((set) => ({
@@ -18,6 +20,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   selectedMarket: "KRW-BTC",
   signals: [],
   isConnected: false,
+  minConfidence: 0.5,
 
   updateTicker: (data) =>
     set((state) => ({
@@ -28,8 +31,9 @@ export const useMarketStore = create<MarketState>((set) => ({
 
   addSignal: (signal) =>
     set((state) => ({
-      signals: [signal, ...state.signals].slice(0, 100), // 최대 100개 유지
+      signals: [signal, ...state.signals].slice(0, 100),
     })),
 
   setConnected: (connected) => set({ isConnected: connected }),
+  setMinConfidence: (value) => set({ minConfidence: value }),
 }));

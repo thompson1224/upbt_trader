@@ -128,7 +128,7 @@ def _compute_ta_score(
         elif rsi > 70:
             scores.append(-min(1.0, (rsi - 70) / 30))
         else:
-            scores.append((50 - rsi) / 50 * 0.3)  # 중립 구간 약한 신호
+            scores.append((50 - rsi) / 50 * 0.5)  # 중립 구간 신호 (기존 0.3)
 
     # MACD 히스토그램
     if macd_hist is not None and macd is not None:

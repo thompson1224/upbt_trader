@@ -2,9 +2,13 @@
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
 import { Brain, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import ConfidenceFilter from "./ConfidenceFilter";
 
 export default function AISignalPanel() {
-  const signals = useMarketStore((s) => s.signals);
+  const minConfidence = useMarketStore((s) => s.minConfidence);
+  const signals = useMarketStore((s) =>
+    s.signals.filter((sig) => sig.confidence >= minConfidence)
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -12,6 +16,8 @@ export default function AISignalPanel() {
         <Brain className="w-4 h-4 text-emerald-400" />
         <span className="text-sm font-semibold">AI 신호</span>
       </div>
+
+      <ConfidenceFilter />
 
       <div className="flex-1 overflow-y-auto">
         {signals.length === 0 ? (

@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""전략 서비스 - 1분봉 수신 → 지표 계산 → Gemini 감성 → 신호 생성"""
+"""전략 서비스 - 1분봉 수신 → 지표 계산 → Ollama 감성 → 신호 생성"""
 import asyncio
 import json
 import logging
@@ -13,7 +13,7 @@ from sqlalchemy import select, desc, func
 from libs.config import get_settings
 from libs.db.session import get_session_factory
 from libs.db.models import Coin, Candle1m, IndicatorSnapshot, SentimentSnapshot, Signal
-from libs.ai.gemini_client import GeminiClient
+from libs.ai.ollama_client import OllamaClient
 from apps.strategy_service.indicators.calculator import compute_indicators
 from apps.strategy_service.fusion.signal_fusion import fuse_signals
 from apps.risk_service.guards.pre_trade_guard import PositionSizer
@@ -26,19 +26,16 @@ logger = logging.getLogger(__name__)
 STRATEGY_ID = "hybrid_v1"
 TIMEFRAME = "1m"
 CANDLE_WINDOW = 200          # 지표 계산에 필요한 캔들 수
-SENTIMENT_INTERVAL_SEC = 1800  # 30분마다 감성 분석 (Free Tier 할당량 절약)
-MIN_CONFIDENCE = 0.5
-GEMINI_MAX_PER_CYCLE = 25    # 사이클당 최대 Gemini 호출 수 (일일 1500건 한도 대응)
+SENTIMENT_INTERVAL_SEC = 1800  # 30분마다 감성 분석 캐시
 TOP_MARKETS_BY_VOLUME = 20   # 24h 거래량 상위 N개 코인만 처리
 
 
 class StrategyRunner:
     def __init__(self):
         self.settings = get_settings()
-        self.gemini = GeminiClient()
+        self.ollama = OllamaClient()
         self.session_factory = get_session_factory()
         self._sentiment_cache: dict[str, tuple[float, float, datetime]] = {}
-        self._gemini_cycle_count = 0  # 현재 사이클 Gemini 호출 수
         # market -> (score, confidence, updated_at)
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
         self._redis = aioredis.from_url(redis_url)
@@ -53,8 +50,6 @@ class StrategyRunner:
             await asyncio.sleep(60)  # 1분 주기
 
     async def _process_all_markets(self):
-        self._gemini_cycle_count = 0  # 사이클 시작마다 초기화
-
         async with self.session_factory() as db:
             # 24h 거래량 상위 N개 코인만 처리
             cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
@@ -138,7 +133,7 @@ class StrategyRunner:
             db.add(snapshot)
             await db.commit()
 
-        # 감성 분석 (10분 캐시)
+        # 감성 분석 (30분 캐시)
         sentiment_score, sentiment_conf = await self._get_sentiment(coin, df, ind)
 
         # 신호 융합
@@ -154,7 +149,6 @@ class StrategyRunner:
 
         # 신호 저장
         current_price = float(df["close"].iloc[-1])
-        sizer = PositionSizer()
         stop_loss = current_price * (1 - 0.03) if signal.side == "buy" else None
         take_profit = current_price * (1 + 0.06) if signal.side == "buy" else None
 
@@ -201,7 +195,7 @@ class StrategyRunner:
     async def _get_sentiment(
         self, coin: Coin, df: pd.DataFrame, ind
     ) -> tuple[float | None, float | None]:
-        """캐시된 감성 점수 반환, 만료 시 Gemini API 호출."""
+        """캐시된 감성 점수 반환, 만료 시 Ollama API 호출."""
         now = datetime.now(tz=timezone.utc)
         cached = self._sentiment_cache.get(coin.market)
 
@@ -210,11 +204,7 @@ class StrategyRunner:
             if (now - updated_at).total_seconds() < SENTIMENT_INTERVAL_SEC:
                 return score, conf
 
-        # 사이클 내 호출 한도 초과 시 TA-only 폴백
-        if self._gemini_cycle_count >= GEMINI_MAX_PER_CYCLE:
-            return None, None
-
-        # Gemini API 호출
+        # Ollama API 호출
         current_price = float(df["close"].iloc[-1])
         price_change = float(df["close"].pct_change(24).iloc[-1]) * 100
 
@@ -226,8 +216,7 @@ class StrategyRunner:
         if ind.bb_pct:
             ta_context += f", BB%B: {ind.bb_pct:.2f}"
 
-        self._gemini_cycle_count += 1
-        result = await self.gemini.analyze_sentiment(
+        result = await self.ollama.analyze_sentiment(
             market=coin.market,
             current_price=current_price,
             price_change_24h=price_change,
@@ -250,10 +239,10 @@ class StrategyRunner:
             snap = SentimentSnapshot(
                 coin_id=coin.id,
                 ts=now,
-                source="gemini",
+                source="ollama",
                 sentiment_score=result["sentiment_score"],
                 confidence=result["confidence"],
-                model_version=self.settings.gemini_model,
+                model_version=self.settings.ollama_model,
                 summary=result.get("summary"),
                 keywords=str(result.get("keywords", [])),
             )

@@ -8,6 +8,7 @@ import {
   TrendingUp,
   Settings,
   Activity,
+  ClipboardList,
 } from "lucide-react";
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
@@ -15,6 +16,7 @@ import { cn } from "@/utils/cn";
 const NAV_ITEMS = [
   { href: "/", icon: LayoutDashboard, label: "대시보드" },
   { href: "/market", icon: TrendingUp, label: "마켓" },
+  { href: "/orders", icon: ClipboardList, label: "주문내역" },
   { href: "/backtest", icon: BarChart2, label: "백테스팅" },
   { href: "/ai-analysis", icon: BrainCircuit, label: "AI 분석" },
   { href: "/settings", icon: Settings, label: "설정" },

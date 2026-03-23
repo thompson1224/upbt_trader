@@ -55,7 +55,13 @@ export const api = {
         access_key: accessKey,
         secret_key: secretKey,
       }),
-    setClaudeKey: (apiKey: string) =>
-      apiClient.post("/secrets/claude-key", { api_key: apiKey }),
+    setGeminiKey: (apiKey: string) =>
+      apiClient.post("/secrets/gemini-key", { api_key: apiKey }),
+    setOllamaUrl: (baseUrl: string, model?: string) =>
+      apiClient.patch("/settings/ollama-url", { base_url: baseUrl, model }),
+    setAutoTrade: (enabled: boolean) =>
+      apiClient.patch("/settings/auto-trade", { enabled }).then((r) => r.data),
+    getAutoTrade: () =>
+      apiClient.get("/settings/auto-trade").then((r) => r.data as { enabled: boolean }),
   },
 };

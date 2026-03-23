@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.gateway.api.v1 import markets, signals, orders, portfolio, backtests, settings as settings_router
-from apps.gateway.ws import market_ws, signal_ws, order_ws
+from apps.gateway.ws import market_ws, signal_ws, order_ws, trade_event_ws
 from libs.config import get_settings
 from libs.db.session import get_engine
 from libs.db.models import Base
@@ -25,6 +25,8 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(market_ws.start_redis_subscriber()),
         asyncio.create_task(signal_ws.start_redis_subscriber()),
+        asyncio.create_task(trade_event_ws.start_trade_event_subscriber()),
+        asyncio.create_task(trade_event_ws.start_portfolio_subscriber()),
     ]
 
     yield
@@ -65,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(market_ws.router, tags=["websocket"])
     app.include_router(signal_ws.router, tags=["websocket"])
     app.include_router(order_ws.router, tags=["websocket"])
+    app.include_router(trade_event_ws.router, tags=["websocket"])
 
     @app.get("/health")
     async def health_check():

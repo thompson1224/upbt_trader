@@ -1,20 +1,25 @@
 "use client";
+import { useEffect } from "react";
 import { useMarketStore } from "@/store/useMarketStore";
 import { useTradeStore } from "@/store/useTradeStore";
-import { Bell, Power } from "lucide-react";
+import { Bell } from "lucide-react";
 import { cn } from "@/utils/cn";
+import { api } from "@/services/api";
+import AutoTradeToggle from "./AutoTradeToggle";
 
 export default function GlobalHeader() {
   const tickers = useMarketStore((s) => s.tickers);
-  const { totalEquity, dailyPnl, isAutoTrading, toggleAutoTrading } =
-    useTradeStore();
+  const { totalEquity, dailyPnl, setAutoTrading } = useTradeStore();
 
   const btc = tickers["KRW-BTC"];
   const eth = tickers["KRW-ETH"];
 
+  useEffect(() => {
+    api.settings.getAutoTrade().then(({ enabled }) => setAutoTrading(enabled)).catch(() => {});
+  }, [setAutoTrading]);
+
   return (
     <header className="h-14 bg-gray-900 border-b border-gray-800 flex items-center px-4 gap-4 shrink-0">
-      {/* 주요 지수 */}
       <div className="flex items-center gap-6 text-sm">
         {btc && (
           <PriceTag
@@ -36,7 +41,6 @@ export default function GlobalHeader() {
 
       <div className="flex-1" />
 
-      {/* 자산 요약 */}
       {totalEquity > 0 && (
         <div className="hidden md:flex items-center gap-4 text-sm">
           <div>
@@ -61,19 +65,7 @@ export default function GlobalHeader() {
         </div>
       )}
 
-      {/* 자동매매 토글 */}
-      <button
-        onClick={toggleAutoTrading}
-        className={cn(
-          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
-          isAutoTrading
-            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-            : "bg-gray-800 text-gray-400 border border-gray-700"
-        )}
-      >
-        <Power className="w-3.5 h-3.5" />
-        {isAutoTrading ? "자동매매 ON" : "자동매매 OFF"}
-      </button>
+      <AutoTradeToggle />
 
       <button className="text-gray-500 hover:text-gray-300 transition-colors">
         <Bell className="w-5 h-5" />

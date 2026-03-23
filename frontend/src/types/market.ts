@@ -49,6 +49,17 @@ export interface Position {
   takeProfit: number | null;
 }
 
+export interface Order {
+  id: number;
+  market: string;
+  side: "buy" | "sell";
+  status: string;
+  ordType: string;
+  price: number | null;
+  volume: number;
+  ts: string | null;
+}
+
 export interface BacktestMetrics {
   cagr: number;
   sharpe: number;

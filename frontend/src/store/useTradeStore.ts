@@ -11,7 +11,7 @@ interface TradeState {
   setPositions: (positions: Position[]) => void;
   setEquity: (equity: number, available: number) => void;
   setDailyPnl: (pnl: number) => void;
-  toggleAutoTrading: () => void;
+  setAutoTrading: (enabled: boolean) => void;
 }
 
 export const useTradeStore = create<TradeState>((set) => ({
@@ -25,6 +25,5 @@ export const useTradeStore = create<TradeState>((set) => ({
   setEquity: (equity, available) =>
     set({ totalEquity: equity, availableKrw: available }),
   setDailyPnl: (pnl) => set({ dailyPnl: pnl }),
-  toggleAutoTrading: () =>
-    set((state) => ({ isAutoTrading: !state.isAutoTrading })),
+  setAutoTrading: (enabled) => set({ isAutoTrading: enabled }),
 }));

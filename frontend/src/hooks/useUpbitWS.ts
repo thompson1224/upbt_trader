@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useCallback } from "react";
 import { useMarketStore } from "@/store/useMarketStore";
+import { useNotificationStore, NotificationType } from "@/store/useNotificationStore";
 import { TickerData, SignalData } from "@/types/market";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
@@ -89,4 +90,53 @@ export function useSignalWS() {
 
     return () => ws.close();
   }, [addSignal]);
+}
+
+const TRADE_EVENT_LABELS: Record<string, { type: NotificationType; title: string }> = {
+  order_placed: { type: "order_placed", title: "주문 접수" },
+  order_filled: { type: "order_filled", title: "주문 체결" },
+  sl_triggered: { type: "sl_triggered", title: "손절 실행" },
+  tp_triggered: { type: "tp_triggered", title: "익절 실행" },
+  risk_rejected: { type: "risk_rejected", title: "리스크 거절" },
+};
+
+export function useTradeEventWS() {
+  const push = useNotificationStore((s) => s.push);
+
+  useEffect(() => {
+    let ws: WebSocket;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      ws = new WebSocket(`${WS_BASE}/ws/trade-events`);
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          const label = TRADE_EVENT_LABELS[data.type];
+          if (!label) return;
+
+          let message = data.market ?? "";
+          if (data.side) message += ` ${data.side.toUpperCase()}`;
+          if (data.price) message += ` @${Number(data.price).toLocaleString("ko-KR")}`;
+          if (data.reason) message += ` — ${data.reason}`;
+
+          push({ type: label.type, title: label.title, message });
+        } catch {
+          // 무시
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 3_000);
+      };
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+    return () => {
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [push]);
 }

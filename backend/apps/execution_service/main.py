@@ -1,10 +1,13 @@
 from __future__ import annotations
 """주문 실행 서비스 - 신호 수신 → 위험 검증 → 주문 전송 → 체결 동기화"""
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import redis.asyncio as aioredis
 from sqlalchemy import select
 
 from libs.config import get_settings
@@ -23,11 +26,13 @@ def _is_market_warning(raw: str | None) -> bool:
     """Upbit market_warning 문자열 → bool. "NONE"과 None은 False."""
     return raw in _MARKET_WARNING_VALUES
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SEC = 5      # 신호 폴링 주기
+POLL_INTERVAL_SEC = 5         # 신호 폴링 주기
 ORDER_SYNC_INTERVAL_SEC = 10  # 미체결 주문 동기화 주기
+SL_TP_INTERVAL_SEC = 10       # SL/TP 모니터 주기
 
 
 class ExecutionService:
@@ -38,13 +43,33 @@ class ExecutionService:
         self.sizer = PositionSizer()
         self.session_factory = get_session_factory()
         self._kill_switch = False
+        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+        self._redis = aioredis.from_url(redis_url)
 
     async def run(self):
         logger.info("Execution service started.")
         await asyncio.gather(
             self._signal_poll_loop(),
             self._order_sync_loop(),
+            self._sl_tp_monitor_loop(),
         )
+
+    # ── 자동매매 ON/OFF 플래그 ──────────────────────────────
+
+    async def _is_auto_trade_enabled(self) -> bool:
+        """Redis의 auto_trade:enabled 키를 읽어 ON/OFF 반환.
+        키 부재 또는 Redis 장애 시 True (기존 동작 유지).
+        """
+        try:
+            val = await self._redis.get("auto_trade:enabled")
+            if val is None:
+                return True  # 키 없음 = 기본값 활성화
+            return val.decode() == "1"
+        except Exception as e:
+            logger.warning("Failed to read auto_trade flag from Redis: %s", e)
+            return True  # Redis 장애 시 폴백: 거래 허용
+
+    # ── 신호 폴링 루프 ──────────────────────────────────────
 
     async def _signal_poll_loop(self):
         """새 신호를 주기적으로 폴링하여 주문 실행."""
@@ -68,7 +93,6 @@ class ExecutionService:
         ).astimezone(timezone.utc)
 
         async with self.session_factory() as db:
-            # 오늘 KST 체결 매도 fill + 연결된 order + coin_id별 position 배치 조회
             fills_result = await db.execute(
                 select(Fill, Order, Position)
                 .join(Order, Fill.order_id == Order.id)
@@ -79,7 +103,6 @@ class ExecutionService:
             )
             today_rows = fills_result.all()
 
-            # 연속 손실용: 최근 매도 체결 20건 (날짜 무관)
             recent_result = await db.execute(
                 select(Fill, Order, Position)
                 .join(Order, Fill.order_id == Order.id)
@@ -90,13 +113,11 @@ class ExecutionService:
             )
             recent_rows = recent_result.all()
 
-        # daily_pnl: 매도가 - 평균매수가 기준 손익
         daily_pnl = 0.0
         for fill, order, pos in today_rows:
             if pos and pos.avg_entry_price > 0:
                 daily_pnl += (fill.price - pos.avg_entry_price) * fill.volume - fill.fee
 
-        # consecutive_losses: 최근 체결부터 역순으로 연속 손실 카운트
         loss_streak = 0
         for fill, order, pos in recent_rows:
             if pos and pos.avg_entry_price > 0:
@@ -125,29 +146,29 @@ class ExecutionService:
             await self._execute_signal(signal)
 
     async def _execute_signal(self, signal: Signal):
+        # ── 자동매매 스위치 확인 ────────────────────────────
+        if not await self._is_auto_trade_enabled():
+            logger.info("Auto-trade is OFF. Skipping signal %s", signal.id)
+            return  # 상태 "new" 유지 → 재활성화 시 재처리
+
         async with self.session_factory() as db:
-            # 코인 정보
             coin = await db.get(Coin, signal.coin_id)
             if not coin:
                 return
 
-            # 현재 포지션
             pos_result = await db.execute(
                 select(Position).where(Position.coin_id == signal.coin_id)
             )
             position = pos_result.scalar_one_or_none()
 
-            # 매수 신호인데 이미 포지션 있으면 스킵
             if signal.side == "buy" and position and position.qty > 0:
                 await self._update_signal_status(db, signal, "rejected", "Already in position")
                 return
 
-            # 매도 신호인데 포지션 없으면 스킵
             if signal.side == "sell" and (not position or position.qty <= 0):
                 await self._update_signal_status(db, signal, "rejected", "No position to sell")
                 return
 
-        # 계좌 잔고 조회
         try:
             balances = await self.upbit.get_balances()
         except Exception as e:
@@ -163,7 +184,6 @@ class ExecutionService:
             if b["currency"] != "KRW"
         ) + krw_balance
 
-        # 현재가 조회 (entry_price 기준)
         try:
             entry_price = await self.upbit.get_ticker(coin.market)
         except Exception as e:
@@ -178,7 +198,6 @@ class ExecutionService:
             logger.warning("Invalid ticker price for %s, skipping", coin.market)
             return
 
-        # 위험 지표 계산
         daily_pnl, consecutive_losses = await self._compute_risk_metrics()
 
         async with self.session_factory() as db:
@@ -196,7 +215,6 @@ class ExecutionService:
             market_warning=_is_market_warning(coin.market_warning),
         )
 
-        # 수량 계산
         if signal.side == "buy":
             stop_loss = signal.suggested_stop_loss or (entry_price * 0.97)
             qty = self.sizer.calculate_qty(
@@ -229,11 +247,19 @@ class ExecutionService:
             async with self.session_factory() as db:
                 await self._update_signal_status(db, signal, "rejected", decision.reason)
             logger.warning("Signal rejected: %s - %s", signal.id, decision.reason)
+            # 거절 이벤트 브로드캐스트
+            try:
+                await self._redis.publish("upbit:trade_event", json.dumps({
+                    "type": "risk_rejected",
+                    "market": coin.market,
+                    "reason": decision.reason,
+                }))
+            except Exception:
+                pass
             return
 
         final_qty = decision.adjusted_qty or qty
 
-        # 주문 실행
         try:
             if signal.side == "buy":
                 result = await self.upbit.place_order(
@@ -241,7 +267,7 @@ class ExecutionService:
                     side="bid",
                     volume=final_qty,
                     price=None,
-                    ord_type="market",  # 시장가 매수
+                    ord_type="market",
                 )
             else:
                 result = await self.upbit.place_order(
@@ -249,7 +275,7 @@ class ExecutionService:
                     side="ask",
                     volume=final_qty,
                     price=None,
-                    ord_type="market",  # 시장가 매도
+                    ord_type="market",
                 )
 
             async with self.session_factory() as db:
@@ -265,6 +291,13 @@ class ExecutionService:
                 )
                 db.add(order)
                 await self._update_signal_status(db, signal, "executed", None)
+                # 매수 시 포지션에 SL/TP 설정
+                if signal.side == "buy":
+                    await self._set_position_sl_tp(
+                        db, signal.coin_id,
+                        signal.suggested_stop_loss,
+                        signal.suggested_take_profit,
+                    )
                 await db.commit()
 
             logger.info(
@@ -272,10 +305,24 @@ class ExecutionService:
                 coin.market, signal.side, final_qty, result.get("uuid"),
             )
 
+            # 주문 접수 이벤트 브로드캐스트
+            try:
+                await self._redis.publish("upbit:trade_event", json.dumps({
+                    "type": "order_placed",
+                    "market": coin.market,
+                    "side": "bid" if signal.side == "buy" else "ask",
+                    "price": entry_price,
+                    "volume": final_qty,
+                }))
+            except Exception:
+                pass
+
         except Exception as e:
             async with self.session_factory() as db:
                 await self._update_signal_status(db, signal, "rejected", str(e))
             logger.error("Order failed: %s - %s", coin.market, e)
+
+    # ── 주문 동기화 루프 ────────────────────────────────────
 
     async def _order_sync_loop(self):
         """미체결 주문 상태를 주기적으로 업비트와 동기화."""
@@ -305,7 +352,6 @@ class ExecutionService:
                     if db_order:
                         db_order.state = new_state
 
-                        # 체결 처리
                         if new_state == "done":
                             for trade in info.get("trades", []):
                                 fill = Fill(
@@ -318,8 +364,22 @@ class ExecutionService:
                                 )
                                 db.add(fill)
 
-                            # 포지션 업데이트
                             await self._update_position(db, order, info)
+
+                            # 체결 이벤트 브로드캐스트
+                            try:
+                                executed_funds = float(info.get("executed_funds", 0))
+                                executed_volume = float(info.get("executed_volume", 0))
+                                avg_price = executed_funds / executed_volume if executed_volume > 0 else 0
+                                await self._redis.publish("upbit:trade_event", json.dumps({
+                                    "type": "order_filled",
+                                    "market": "",  # order에 market 정보 없으면 생략
+                                    "side": order.side,
+                                    "price": avg_price,
+                                    "volume": executed_volume,
+                                }))
+                            except Exception:
+                                pass
 
                         await db.commit()
             except Exception as e:
@@ -341,7 +401,6 @@ class ExecutionService:
 
         if order.side == "bid":  # 매수
             if position:
-                # 평균단가 재계산
                 total_qty = position.qty + executed_volume
                 position.avg_entry_price = (
                     position.avg_entry_price * position.qty + avg_price * executed_volume
@@ -358,6 +417,153 @@ class ExecutionService:
             pnl = (avg_price - position.avg_entry_price) * executed_volume
             position.realized_pnl += pnl
             position.qty = max(0, position.qty - executed_volume)
+            if position.qty <= 0:
+                position.stop_loss = None
+                position.take_profit = None
+
+    async def _set_position_sl_tp(
+        self, db, coin_id: int,
+        stop_loss: float | None, take_profit: float | None,
+    ):
+        """매수 주문 후 포지션에 SL/TP 설정."""
+        pos_result = await db.execute(
+            select(Position).where(Position.coin_id == coin_id)
+        )
+        position = pos_result.scalar_one_or_none()
+        if position:
+            if stop_loss is not None:
+                position.stop_loss = stop_loss
+            if take_profit is not None:
+                position.take_profit = take_profit
+
+    # ── SL/TP 모니터 루프 ───────────────────────────────────
+
+    async def _sl_tp_monitor_loop(self):
+        """열린 포지션의 SL/TP를 10초마다 확인하고, 조건 충족 시 시장가 매도."""
+        while not self._kill_switch:
+            try:
+                await self._check_all_positions_sl_tp()
+            except Exception as e:
+                logger.error("SL/TP monitor error: %s", e)
+            await asyncio.sleep(SL_TP_INTERVAL_SEC)
+
+    async def _check_all_positions_sl_tp(self):
+        async with self.session_factory() as db:
+            result = await db.execute(
+                select(Position, Coin)
+                .join(Coin, Position.coin_id == Coin.id)
+                .where(Position.qty > 0)
+            )
+            rows = result.all()
+
+        for position, coin in rows:
+            try:
+                await self._check_position_sl_tp(position, coin)
+            except Exception as e:
+                logger.warning("SL/TP check failed for %s: %s", coin.market, e)
+
+    async def _check_position_sl_tp(self, position: Position, coin: Coin):
+        """단일 포지션 SL/TP 확인 + 미실현 손익 갱신."""
+        current_price = await self.upbit.get_ticker(coin.market)
+        if not current_price or current_price <= 0:
+            return
+
+        unrealized_pnl = (current_price - position.avg_entry_price) * position.qty
+
+        sl_triggered = (
+            position.stop_loss is not None
+            and current_price <= position.stop_loss
+        )
+        tp_triggered = (
+            position.take_profit is not None
+            and current_price >= position.take_profit
+        )
+
+        trigger_reason: str | None = None
+        if sl_triggered:
+            trigger_reason = f"SL triggered: {current_price:.0f} <= {position.stop_loss:.0f}"
+        elif tp_triggered:
+            trigger_reason = f"TP triggered: {current_price:.0f} >= {position.take_profit:.0f}"
+
+        # 미실현 손익 갱신 (항상)
+        async with self.session_factory() as db:
+            db_pos = await db.get(Position, position.id)
+            if not db_pos or db_pos.qty <= 0:
+                return  # 이미 청산됨 (레이스 컨디션 방어)
+            db_pos.unrealized_pnl = unrealized_pnl
+            await db.commit()
+
+        # Redis 브로드캐스트 — 미실현 손익 변경
+        try:
+            await self._redis.publish("upbit:position_update", json.dumps({
+                "coinId": position.coin_id,
+                "market": coin.market,
+                "qty": position.qty,
+                "avgEntryPrice": position.avg_entry_price,
+                "currentPrice": current_price,
+                "unrealizedPnl": unrealized_pnl,
+                "stopLoss": position.stop_loss,
+                "takeProfit": position.take_profit,
+            }))
+        except Exception as e:
+            logger.warning("Failed to publish position_update: %s", e)
+
+        # SL/TP 트리거 시 시장가 매도
+        if trigger_reason:
+            logger.info("Position close triggered for %s: %s", coin.market, trigger_reason)
+            await self._execute_sl_tp_sell(position, coin, trigger_reason)
+
+    async def _execute_sl_tp_sell(self, position: Position, coin: Coin, reason: str):
+        """
+        SL/TP 조건 충족 시 시장가 매도 직접 실행.
+        주의: auto_trade 스위치와 무관하게 항상 실행 (손실 방지 목적).
+        """
+        qty = position.qty
+        try:
+            result = await self.upbit.place_order(
+                market=coin.market,
+                side="ask",
+                volume=qty,
+                price=None,
+                ord_type="market",
+            )
+        except Exception as e:
+            logger.error("SL/TP sell failed for %s: %s", coin.market, e)
+            return
+
+        async with self.session_factory() as db:
+            order = Order(
+                signal_id=None,
+                coin_id=coin.id,
+                exchange_order_id=result.get("uuid"),
+                side="ask",
+                ord_type="market",
+                volume=qty,
+                state=result.get("state", "wait"),
+                rejected_reason=reason[:200],
+                requested_at=datetime.now(tz=timezone.utc),
+            )
+            db.add(order)
+            await db.commit()
+
+        logger.info(
+            "SL/TP order placed: %s qty=%.6f uuid=%s reason=%s",
+            coin.market, qty, result.get("uuid"), reason,
+        )
+
+        # SL/TP 이벤트 브로드캐스트
+        try:
+            event_type = "sl_triggered" if "SL" in reason else "tp_triggered"
+            current_price = await self.upbit.get_ticker(coin.market)
+            await self._redis.publish("upbit:trade_event", json.dumps({
+                "type": event_type,
+                "market": coin.market,
+                "price": current_price,
+            }))
+        except Exception:
+            pass
+
+    # ── 공통 헬퍼 ──────────────────────────────────────────
 
     @staticmethod
     async def _update_signal_status(db, signal: Signal, status: str, reason: str | None):
