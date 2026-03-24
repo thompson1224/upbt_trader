@@ -12,13 +12,13 @@ from libs.upbit.websocket_client import UpbitWebSocketClient
 from libs.upbit.rest_client import UpbitRestClient
 from libs.db.session import get_session_factory
 from libs.db.models import Coin, Candle1m
-from sqlalchemy import select, insert
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-_candle_buffer: dict[str, list] = {}  # market -> [tick]
+_candle_buffer: dict[tuple[str, str], list] = {}  # (market, minute_key) -> [tick]
 _redis: aioredis.Redis | None = None
 _redis_url: str = ""
 
@@ -59,14 +59,14 @@ async def on_tick(data: dict):
     ts = datetime.fromtimestamp(data.get("tms", 0) / 1000, tz=timezone.utc)
     minute_key = ts.strftime("%Y-%m-%dT%H:%M")
 
-    if market not in _candle_buffer:
-        _candle_buffer[market] = []
+    buffer_key = (market, minute_key)
+    if buffer_key not in _candle_buffer:
+        _candle_buffer[buffer_key] = []
 
-    _candle_buffer[market].append({
+    _candle_buffer[buffer_key].append({
         "ts": ts,
         "trade_price": data.get("tp", 0),
         "trade_volume": data.get("tv", 0),
-        "minute_key": minute_key,
     })
 
     # 주기적 플러시는 별도 태스크에서 처리
@@ -84,7 +84,7 @@ async def flush_candles_loop():
         _candle_buffer.clear()
 
         async with session_factory() as db:
-            for market, ticks in buffer_snapshot.items():
+            for (market, minute_key), ticks in buffer_snapshot.items():
                 if not ticks:
                     continue
 
@@ -99,7 +99,9 @@ async def flush_candles_loop():
                 # 1분봉 집계
                 prices = [t["trade_price"] for t in ticks]
                 volumes = [t["trade_volume"] for t in ticks]
-                candle_ts = ticks[0]["ts"].replace(second=0, microsecond=0)
+                candle_ts = datetime.strptime(
+                    minute_key, "%Y-%m-%dT%H:%M"
+                ).replace(tzinfo=timezone.utc)
 
                 stmt = pg_insert(Candle1m).values(
                     coin_id=coin_id,
@@ -123,7 +125,7 @@ async def flush_candles_loop():
                 await db.execute(stmt)
 
             await db.commit()
-            logger.info("Flushed candles for %d markets", len(buffer_snapshot))
+            logger.info("Flushed candles for %d market-minute buckets", len(buffer_snapshot))
 
 
 async def sync_krw_markets():
@@ -161,7 +163,7 @@ async def sync_krw_markets():
 
 async def main():
     global _redis, _redis_url
-    settings = get_settings()
+    get_settings()
     logger.info("Starting market data service...")
 
     # Redis 연결

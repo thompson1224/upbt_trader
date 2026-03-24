@@ -7,9 +7,9 @@ from typing import Literal
 TA_WEIGHT = 0.6
 SENTIMENT_WEIGHT = 0.4
 
-BUY_THRESHOLD = 0.25    # 완만한 상승 추세도 포착 (기존 0.35)
-SELL_THRESHOLD = -0.25  # 기존 -0.35
-MIN_CONFIDENCE = 0.45   # Ollama 보수적 출력 대응 (기존 0.5)
+BUY_THRESHOLD = 0.35    # 수수료(0.1%) 대비 수익 확보하면서 현 시장 조건 고려
+SELL_THRESHOLD = -0.30  # 매도 신호 기준
+MIN_CONFIDENCE = 0.55   # 신뢰도 기준 강화
 
 
 @dataclass

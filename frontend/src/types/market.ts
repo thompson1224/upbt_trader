@@ -45,8 +45,18 @@ export interface Position {
   avgEntryPrice: number;
   unrealizedPnl: number;
   realizedPnl: number;
+  source: "strategy" | "external";
   stopLoss: number | null;
   takeProfit: number | null;
+}
+
+export interface EquityCurvePoint {
+  ts: string;
+  equity: number;
+  availableKrw?: number;
+  positionValue?: number;
+  dailyPnl?: number;
+  openPositions?: number;
 }
 
 export interface Order {
@@ -58,6 +68,17 @@ export interface Order {
   price: number | null;
   volume: number;
   ts: string | null;
+}
+
+export interface AuditEvent {
+  id: number;
+  eventType: string;
+  source: string;
+  level: "info" | "warning" | "error" | string;
+  market: string | null;
+  message: string;
+  payload: Record<string, unknown> | null;
+  ts: string;
 }
 
 export interface BacktestMetrics {

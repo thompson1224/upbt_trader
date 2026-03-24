@@ -1,5 +1,6 @@
 import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
+import type { AuditEvent, Position } from "@/types/market";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -36,8 +37,43 @@ export const api = {
     list: (state?: string) =>
       apiClient.get("/orders", { params: { state } }).then((r) => r.data),
   },
+  audit: {
+    list: (params?: { eventType?: string; source?: string; limit?: number }) =>
+      apiClient
+        .get("/audit-events", {
+          params: {
+            event_type: params?.eventType,
+            source: params?.source,
+            limit: params?.limit,
+          },
+        })
+        .then((r) => r.data as AuditEvent[]),
+  },
   portfolio: {
-    positions: () => apiClient.get("/positions").then((r) => r.data),
+    positions: () =>
+      apiClient.get("/positions").then((r) =>
+        (r.data as Array<{
+          id: number;
+          market: string;
+          qty: number;
+          avg_entry_price: number;
+          unrealized_pnl: number;
+          realized_pnl: number;
+          source: "strategy" | "external";
+          stop_loss: number | null;
+          take_profit: number | null;
+        }>).map((pos): Position => ({
+          id: pos.id,
+          market: pos.market,
+          qty: pos.qty,
+          avgEntryPrice: pos.avg_entry_price,
+          unrealizedPnl: pos.unrealized_pnl,
+          realizedPnl: pos.realized_pnl,
+          source: pos.source,
+          stopLoss: pos.stop_loss,
+          takeProfit: pos.take_profit,
+        }))
+      ),
     equityCurve: () =>
       apiClient.get("/portfolio/equity-curve").then((r) => r.data),
   },
@@ -61,5 +97,9 @@ export const api = {
       apiClient.patch("/settings/auto-trade", { enabled }).then((r) => r.data),
     getAutoTrade: () =>
       apiClient.get("/settings/auto-trade").then((r) => r.data as { enabled: boolean }),
+    setExternalPositionStopLoss: (enabled: boolean) =>
+      apiClient.patch("/settings/external-position-stop-loss", { enabled }).then((r) => r.data),
+    getExternalPositionStopLoss: () =>
+      apiClient.get("/settings/external-position-stop-loss").then((r) => r.data as { enabled: boolean }),
   },
 };

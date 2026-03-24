@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
 from typing import Literal
 
@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     risk_max_daily_loss_pct: float = 0.03
     risk_max_position_pct: float = 0.10
     risk_max_single_trade_pct: float = 0.01
+    risk_default_stop_loss_pct: float = 0.03
+    risk_default_take_profit_pct: float = 0.06
 
     # WebSocket
     ws_reconnect_min_sec: float = 1.0
@@ -53,9 +55,10 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL is required")
         return v
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
 
 _settings: Settings | None = None

@@ -11,6 +11,7 @@ interface MarketState {
   updateTicker: (data: TickerData) => void;
   setSelectedMarket: (market: string) => void;
   addSignal: (signal: SignalData) => void;
+  setSignals: (signals: SignalData[]) => void;
   setConnected: (connected: boolean) => void;
   setMinConfidence: (value: number) => void;
 }
@@ -33,6 +34,8 @@ export const useMarketStore = create<MarketState>((set) => ({
     set((state) => ({
       signals: [signal, ...state.signals].slice(0, 100),
     })),
+
+  setSignals: (signals) => set({ signals }),
 
   setConnected: (connected) => set({ isConnected: connected }),
   setMinConfidence: (value) => set({ minConfidence: value }),

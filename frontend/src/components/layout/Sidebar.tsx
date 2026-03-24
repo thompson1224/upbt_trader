@@ -9,6 +9,7 @@ import {
   Settings,
   Activity,
   ClipboardList,
+  ShieldCheck,
 } from "lucide-react";
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { href: "/", icon: LayoutDashboard, label: "대시보드" },
   { href: "/market", icon: TrendingUp, label: "마켓" },
   { href: "/orders", icon: ClipboardList, label: "주문내역" },
+  { href: "/audit", icon: ShieldCheck, label: "감사로그" },
   { href: "/backtest", icon: BarChart2, label: "백테스팅" },
   { href: "/ai-analysis", icon: BrainCircuit, label: "AI 분석" },
   { href: "/settings", icon: Settings, label: "설정" },

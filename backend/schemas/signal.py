@@ -7,6 +7,7 @@ class SignalResponse(BaseModel):
     id: int
     strategy_id: str
     coin_id: int
+    market: Optional[str] = None
     timeframe: str
     ts: datetime
     ta_score: float

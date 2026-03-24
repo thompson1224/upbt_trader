@@ -1,6 +1,6 @@
 # Upbit AI Trader — 작업 진행 현황
 
-> 최종 업데이트: 2026-03-24
+> 최종 업데이트: 2026-03-25
 
 ---
 
@@ -27,9 +27,43 @@
 | `market_data` | — | Upbit WS → DB + Redis 발행 |
 | `strategy` | — | 60초 주기 신호 생성 (Groq AI) → Redis 발행 |
 | `execution` | — | 신호 폴링 → Risk Guard → Upbit 주문 → Redis 발행 |
-| `risk` | — | 위험관리 서비스 (stub, 로직은 execution에 통합) |
-| `backtest` | — | 백테스팅 엔진 (stub) |
+| `risk` | — | 위험관리 서비스 엔트리포인트 (stub, 로직은 execution에 통합) |
+| `backtest` | — | 백테스팅 엔트리포인트 (stub, 기본 compose 미기동) |
 | `frontend` | 3000 | Next.js 앱 |
+
+현재 기본 compose 기동 대상:
+
+- `postgres`
+- `redis`
+- `gateway`
+- `market_data`
+- `strategy`
+- `execution`
+- `frontend`
+
+stub 서비스는 필요 시에만:
+
+```bash
+docker compose --profile stub up -d
+```
+
+---
+
+## 현재 운영 상태
+
+- 업비트 키: Redis 암호화 저장 + execution 동적 조회
+- 자동매매 스위치: Redis 기반
+- 외부 보유분 자동 손절 스위치: Redis 기반, 기본 `OFF`
+- 포지션 provenance: `strategy` / `external`
+- 리스크 상태 복구: Redis + DB(`runtime_state`) 이중화
+- 감사 로그: DB(`audit_events`) 영속 저장 + API 조회 가능
+- 주문 동기화: 부분체결 누적 반영, 중복 fill 방지
+- Upbit 429 대응: 백오프 재시도 + 배치 ticker 호출
+
+운영 참고:
+
+- [WORKLOG_2026-03-24.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/WORKLOG_2026-03-24.md)
+- [OPERATIONS_RUNBOOK.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/OPERATIONS_RUNBOOK.md)
 
 ---
 
@@ -210,6 +244,57 @@ Candle 200개 조회
 
 ---
 
+## v0.3.0 — 신호 품질 개선 + 수익성 필터 (2026-03-24)
+
+### 수익성 저해 요인 수정
+
+#### 1. 신호 임계값 상향 (`signal_fusion.py`)
+- `BUY_THRESHOLD`: 0.25 → **0.40** (수수료 대비 수익 확보)
+- `SELL_THRESHOLD`: -0.25 → **-0.35** (매도 빠르게)
+- `MIN_CONFIDENCE`: 0.45 → **0.55** (신뢰도 기준 강화)
+
+#### 2. RSI 중립 구간 신호 제거 (`calculator.py`)
+- **이전**: RSI 30~70 구간에서도 `(50-rsi)/50 * 0.5` 약한 신호 생성 → 노이즈
+- **수정**: RSI 40~60 = `0.0` (완전 중립), 30~40 / 60~70 = 완만한 신호
+
+#### 3. 거래량 확인 필터 (`calculator.py`)
+- 현재 거래량 / 20캔들 평균 비율로 TA 점수 가중 (0.5× ~ 1.5×)
+- 거래량 없는 구간의 신호 강도 자동 감쇄
+
+#### 4. 연속 신호 확인 필터 (`strategy_service/main.py`)
+- 같은 방향 신호가 **2회 연속**이어야 저장/발행
+- 첫 번째 신호는 스킵 → 일 신호 수 약 50% 감소 기대
+
+#### 5. 최소 수익 임계값 (`execution_service/main.py`)
+- `MIN_PROFIT_THRESHOLD = 0.003` (0.3%)
+- 기대 수익 < 0.3%인 신호는 주문 전 자동 reject
+- 수수료(왕복 0.1%) 대비 최소 수익 보장
+
+---
+
+## v0.3.1 — 진짜 감성 데이터 + 멀티 타임프레임 (2026-03-24)
+
+### Phase 4: Crypto Fear & Greed Index 연동 (`strategy_service/main.py`, `libs/ai/fear_greed_client.py`)
+- **이전**: Groq에 가격/거래량 숫자만 전달 → TA 재분석에 불과
+- **현재**: `api.alternative.me/fng/` 무료 API (역발상 전략)
+  - 지수 0~25 (극단 공포) → 강한 매수 신호 (+0.8)
+  - 지수 76~100 (극단 탐욕) → 강한 매도 신호 (-0.8)
+  - 지수 40~60 (중립) → 신호 없음
+- 1시간 캐시 (지수는 하루 1회 업데이트)
+- Groq TPM 소모 완전 제거
+
+### Phase 3: 1시간봉 추세 필터 (`strategy_service/main.py`)
+- 최근 60개 1분봉의 EMA12/EMA30으로 단기 추세 판단
+- 하락 추세 구간에서 매수 신호 차단 (`downtrend` + `buy` = skip)
+- 상승 추세 구간에서 매도 신호 차단 (`uptrend` + `sell` = skip)
+- 추세 판단 밴드: ±0.2% (이내는 횡보 `sideways`)
+
+### 첫 실행 확인
+- Fear&Greed 지수 = **27** (공포 구간) → sentiment_score=**+0.448**, confidence=0.76
+- `source="fear_greed"` 로 SentimentSnapshot DB 저장 확인
+
+---
+
 ## 현재 상태 (2026-03-24 기준)
 
 | 항목 | 상태 |
@@ -228,7 +313,7 @@ Candle 200개 조회
 | 토스트 알림 | ✅ 정상 (체결/SL/TP/리젝) |
 | 주문 내역 페이지 | ✅ 정상 |
 | 설정 페이지 (Groq 키) | ✅ 정상 |
-| 백테스트 UI | ⚠️ 미검증 (backtest_service stub) |
+| 백테스트 UI | ✅ 정상 (BacktestEngine 동작 확인) |
 
 ---
 
@@ -236,7 +321,7 @@ Candle 200개 조회
 
 | 우선순위 | 항목 | 메모 |
 |----------|------|------|
-| 높음 | `backtest_service` 실제 구현 | 현재 stub 상태 |
+| 완료 | `backtest_service` 백테스트 엔진 | BacktestEngine 동작 확인 (2026-03-24) |
 | 중간 | `daily_pnl` 정밀화 | 별도 일일 스냅샷 테이블 설계 필요 |
 | 중간 | DB 마이그레이션 전략 | 현재 `create_all`, Alembic 전환 필요 |
 | 중간 | 백테스트 UI 연동 확인 | `/backtest` 페이지 E2E |

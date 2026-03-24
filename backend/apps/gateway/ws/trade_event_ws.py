@@ -8,6 +8,8 @@ from typing import Set
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from libs.audit import record_audit_event
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -43,6 +45,14 @@ async def start_trade_event_subscriber():
                     if message["type"] == "message":
                         try:
                             data = json.loads(message["data"])
+                            await record_audit_event(
+                                event_type=str(data.get("type", "trade_event")),
+                                source="execution",
+                                level="warning" if "rejected" in str(data.get("type", "")) else "info",
+                                market=data.get("market"),
+                                message=_build_trade_event_message(data),
+                                payload=data,
+                            )
                             await _broadcast(_trade_connections, data)
                         except Exception:
                             pass
@@ -88,6 +98,19 @@ async def start_portfolio_subscriber():
     finally:
         if r:
             await r.aclose()
+
+
+def _build_trade_event_message(data: dict) -> str:
+    event_type = str(data.get("type", "trade_event"))
+    market = str(data.get("market", "") or "")
+    reason = str(data.get("reason", "") or "")
+    if market and reason:
+        return f"{event_type} {market}: {reason}"[:255]
+    if market:
+        return f"{event_type} {market}"[:255]
+    if reason:
+        return f"{event_type}: {reason}"[:255]
+    return event_type[:255]
 
 
 @router.websocket("/ws/trade-events")

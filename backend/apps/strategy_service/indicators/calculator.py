@@ -35,7 +35,8 @@ def compute_indicators(df: pd.DataFrame) -> IndicatorResult:
     ema_20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1]) if n >= 20 else None
     ema_50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1]) if n >= 50 else None
 
-    ta_score = _compute_ta_score(rsi, macd, macd_hist, bb_pct, close, ema_20, ema_50)
+    volume = df["volume"] if "volume" in df.columns else None
+    ta_score = _compute_ta_score(rsi, macd, macd_hist, bb_pct, close, ema_20, ema_50, volume)
 
     return IndicatorResult(
         rsi=rsi,
@@ -111,6 +112,7 @@ def _compute_ta_score(
     close: pd.Series,
     ema_20: float | None,
     ema_50: float | None,
+    volume: pd.Series | None = None,
 ) -> float:
     """
     복합 TA 점수 계산 (-1 ~ 1).
@@ -121,14 +123,18 @@ def _compute_ta_score(
     """
     scores = []
 
-    # RSI (30이하 매수, 70이상 매도)
+    # RSI (30이하 매수, 70이상 매도; 40~60 완전 중립)
     if rsi is not None:
         if rsi < 30:
             scores.append(min(1.0, (30 - rsi) / 30))
         elif rsi > 70:
             scores.append(-min(1.0, (rsi - 70) / 30))
+        elif rsi < 40:
+            scores.append((40 - rsi) / 40 * 0.5)
+        elif rsi > 60:
+            scores.append(-((rsi - 60) / 40 * 0.5))
         else:
-            scores.append((50 - rsi) / 50 * 0.5)  # 중립 구간 신호 (기존 0.3)
+            scores.append(0.0)  # 40~60 완전 중립, 노이즈 제거
 
     # MACD 히스토그램
     if macd_hist is not None and macd is not None:
@@ -155,4 +161,15 @@ def _compute_ta_score(
     if not scores:
         return 0.0
 
-    return float(np.clip(np.mean(scores), -1.0, 1.0))
+    raw = float(np.mean(scores))
+
+    # 거래량 확인 필터: 현재 거래량이 20개 이동평균의 0.8배 미만이면 신호 감쇄
+    if volume is not None and len(volume) >= 20:
+        avg_vol = float(volume.rolling(20).mean().iloc[-1])
+        cur_vol = float(volume.iloc[-1])
+        if avg_vol > 0:
+            vol_ratio = cur_vol / avg_vol
+            multiplier = float(np.clip(vol_ratio / 0.8, 0.5, 1.5))
+            raw = raw * multiplier
+
+    return float(np.clip(raw, -1.0, 1.0))

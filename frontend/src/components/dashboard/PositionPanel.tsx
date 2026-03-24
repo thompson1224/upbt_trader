@@ -54,7 +54,19 @@ export default function PositionPanel() {
                 className="px-3 py-2 border-b border-gray-800/30 text-xs"
               >
                 <div className="flex justify-between mb-0.5">
-                  <span className="font-mono text-gray-300">{pos.market}</span>
+                  <span className="font-mono text-gray-300 flex items-center gap-2">
+                    <span>{pos.market}</span>
+                    <span
+                      className={cn(
+                        "rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                        pos.source === "strategy"
+                          ? "bg-emerald-950 text-emerald-300"
+                          : "bg-amber-950 text-amber-300"
+                      )}
+                    >
+                      {pos.source === "strategy" ? "strategy" : "external"}
+                    </span>
+                  </span>
                   <span
                     className={cn(
                       "font-mono font-bold",

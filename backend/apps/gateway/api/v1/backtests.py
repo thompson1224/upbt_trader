@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
-import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -90,8 +89,10 @@ async def _run_backtest(run_id: int, req: BacktestRunRequest):
     session_factory = get_session_factory()
     async with session_factory() as db:
         run = await db.get(BacktestRun, run_id)
+        if not run:
+            raise RuntimeError(f"Backtest run {run_id} not found")
         run.status = "running"
-        run.started_at = datetime.utcnow()
+        run.started_at = datetime.now(timezone.utc)
         await db.commit()
 
         try:
@@ -163,11 +164,11 @@ async def _run_backtest(run_id: int, req: BacktestRunRequest):
             db.add(metrics)
 
             run.status = "completed"
-            run.finished_at = datetime.utcnow()
+            run.finished_at = datetime.now(timezone.utc)
             await db.commit()
 
         except Exception as e:
             run.status = "failed"
             run.error_message = str(e)
-            run.finished_at = datetime.utcnow()
+            run.finished_at = datetime.now(timezone.utc)
             await db.commit()

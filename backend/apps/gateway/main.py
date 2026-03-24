@@ -5,7 +5,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.gateway.api.v1 import markets, signals, orders, portfolio, backtests, settings as settings_router
+from apps.gateway.api.v1 import (
+    audit,
+    backtests,
+    manual_orders,
+    markets,
+    orders,
+    portfolio,
+    settings as settings_router,
+    signals,
+)
 from apps.gateway.ws import market_ws, signal_ws, order_ws, trade_event_ws
 from libs.config import get_settings
 from libs.db.session import get_engine
@@ -60,7 +69,9 @@ def create_app() -> FastAPI:
     app.include_router(signals.router, prefix=prefix, tags=["signals"])
     app.include_router(orders.router, prefix=prefix, tags=["orders"])
     app.include_router(portfolio.router, prefix=prefix, tags=["portfolio"])
+    app.include_router(audit.router, prefix=prefix, tags=["audit"])
     app.include_router(backtests.router, prefix=prefix, tags=["backtests"])
+    app.include_router(manual_orders.router, prefix=prefix, tags=["manual-orders"])
     app.include_router(settings_router.router, prefix=prefix, tags=["settings"])
 
     # WebSocket 라우터

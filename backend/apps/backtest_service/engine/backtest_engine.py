@@ -94,10 +94,10 @@ class BacktestEngine:
                     fee = exit_price * position_qty * fee_rate
                     current_trade.exit_ts = ts
                     current_trade.exit_price = exit_price
-                    current_trade.pnl = pnl - fee
-                    current_trade.fee = fee
+                    current_trade.pnl = pnl - current_trade.fee - fee
+                    current_trade.fee += fee
                     trades.append(current_trade)
-                    equity += pnl - fee
+                    equity += position_qty * exit_price - fee
                     position_qty = 0.0
                     current_trade = None
                     equity_curve.append({"ts": ts, "equity": equity})
@@ -110,10 +110,10 @@ class BacktestEngine:
                     fee = exit_price * position_qty * fee_rate
                     current_trade.exit_ts = ts
                     current_trade.exit_price = exit_price
-                    current_trade.pnl = pnl - fee
-                    current_trade.fee = fee
+                    current_trade.pnl = pnl - current_trade.fee - fee
+                    current_trade.fee += fee
                     trades.append(current_trade)
-                    equity += pnl - fee
+                    equity += position_qty * exit_price - fee
                     position_qty = 0.0
                     current_trade = None
                     equity_curve.append({"ts": ts, "equity": equity})
@@ -128,10 +128,12 @@ class BacktestEngine:
                 stop_loss = entry_price * (1 - cfg.stop_loss_pct)
                 take_profit = entry_price * (1 + cfg.take_profit_pct)
                 risk_budget = equity * 0.01  # 1% 위험
-                qty = risk_budget / (entry_price - stop_loss)
+                risk_qty = risk_budget / max(entry_price - stop_loss, 1e-12)
+                max_position_qty = (equity * 0.1) / entry_price
+                qty = min(risk_qty, max_position_qty)
                 order_value = qty * entry_price
 
-                if order_value <= equity * 0.1 and order_value >= 5_000:
+                if order_value >= 5_000 and order_value + (entry_price * qty * fee_rate) <= equity:
                     fee = entry_price * qty * fee_rate
                     equity -= order_value + fee
                     position_qty = qty
@@ -152,7 +154,7 @@ class BacktestEngine:
                 fee = exit_price * position_qty * fee_rate
                 current_trade.exit_ts = ts
                 current_trade.exit_price = exit_price
-                current_trade.pnl = pnl - fee
+                current_trade.pnl = pnl - current_trade.fee - fee
                 current_trade.fee += fee
                 trades.append(current_trade)
                 equity += position_qty * exit_price - fee
@@ -189,7 +191,8 @@ class BacktestEngine:
         # Sharpe (연율화, 무위험이자율 3%)
         rf_daily = 0.03 / 365
         excess_returns = returns - rf_daily
-        sharpe = (excess_returns.mean() / excess_returns.std() * np.sqrt(365)) if len(excess_returns) > 1 else 0
+        std = float(excess_returns.std())
+        sharpe = (excess_returns.mean() / std * np.sqrt(365)) if (len(excess_returns) > 1 and std > 1e-10) else 0.0
 
         # Max Drawdown
         eq_series = pd.Series(equities)

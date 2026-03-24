@@ -1,8 +1,10 @@
 "use client";
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { useMarketStore } from "@/store/useMarketStore";
+import { useTradeStore } from "@/store/useTradeStore";
 import { useNotificationStore, NotificationType } from "@/store/useNotificationStore";
-import { TickerData, SignalData } from "@/types/market";
+import { EquityCurvePoint, TickerData, SignalData } from "@/types/market";
+import { api } from "@/services/api";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
@@ -26,70 +28,91 @@ export function useUpbitMarketWS(codes: string[]) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { updateTicker, setConnected } = useMarketStore();
 
-  const connect = useCallback(() => {
-    const params = codes.join(",");
-    const url = `${WS_BASE}/ws/market?codes=${encodeURIComponent(params)}`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setConnected(true);
-      // 30초마다 ping
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send("ping");
-      }, 30_000);
-      ws.addEventListener("close", () => clearInterval(pingInterval));
-    };
-
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data === "pong") return;
-        updateTicker(mapTickerPayload(data));
-      } catch {
-        // 무시
-      }
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      // 재연결 (3초 후)
-      reconnectTimer.current = setTimeout(connect, 3_000);
-    };
-
-    ws.onerror = () => {
-      ws.close();
-    };
-  }, [codes, updateTicker, setConnected]);
-
   useEffect(() => {
+    function connect() {
+      const params = codes.join(",");
+      const url = `${WS_BASE}/ws/market?codes=${encodeURIComponent(params)}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        const pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send("ping");
+        }, 30_000);
+        ws.addEventListener("close", () => clearInterval(pingInterval));
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data === "pong") return;
+          updateTicker(mapTickerPayload(data));
+        } catch {
+          // 무시
+        }
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        reconnectTimer.current = setTimeout(connect, 3_000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
     connect();
     return () => {
-      reconnectTimer.current && clearTimeout(reconnectTimer.current);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
-  }, [connect]);
+  }, [codes, setConnected, updateTicker]);
 }
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function useSignalWS() {
   const wsRef = useRef<WebSocket | null>(null);
-  const { addSignal } = useMarketStore();
+  const { addSignal, setSignals } = useMarketStore();
 
   useEffect(() => {
+    // 초기 신호 로드: 최근 buy/sell 신호 50개 (hold 제외)
+    const loadInitialSignals = async () => {
+      try {
+        const [buyRes, sellRes] = await Promise.all([
+          fetch(`${API_BASE}/api/v1/signals?side=buy&limit=25`),
+          fetch(`${API_BASE}/api/v1/signals?side=sell&limit=25`),
+        ]);
+        const [buyData, sellData] = await Promise.all([
+          buyRes.json(),
+          sellRes.json(),
+        ]);
+        const combined: SignalData[] = [...buyData, ...sellData].sort(
+          (a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()
+        );
+        if (combined.length > 0) setSignals(combined.slice(0, 100));
+      } catch {
+        // 조용히 실패 — WebSocket으로 폴백
+      }
+    };
+    loadInitialSignals();
+
     const ws = new WebSocket(`${WS_BASE}/ws/signals`);
     wsRef.current = ws;
 
     ws.onmessage = (e) => {
       try {
         const signal: SignalData = JSON.parse(e.data);
-        addSignal(signal);
+        if (signal.side !== "hold") addSignal(signal);
       } catch {
         // 무시
       }
     };
 
     return () => ws.close();
-  }, [addSignal]);
+  }, [addSignal, setSignals]);
 }
 
 const TRADE_EVENT_LABELS: Record<string, { type: NotificationType; title: string }> = {
@@ -139,4 +162,70 @@ export function useTradeEventWS() {
       ws?.close();
     };
   }, [push]);
+}
+
+export function usePortfolioWS() {
+  const setEquityCurve = useTradeStore((s) => s.setEquityCurve);
+  const addEquityPoint = useTradeStore((s) => s.addEquityPoint);
+  const setEquity = useTradeStore((s) => s.setEquity);
+  const setDailyPnl = useTradeStore((s) => s.setDailyPnl);
+
+  useEffect(() => {
+    let ws: WebSocket;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    const applySnapshot = (point: EquityCurvePoint) => {
+      addEquityPoint(point);
+      setEquity(point.equity ?? 0, point.availableKrw ?? 0);
+      setDailyPnl(point.dailyPnl ?? 0);
+    };
+
+    const loadInitialCurve = async () => {
+      try {
+        const response = await api.portfolio.equityCurve();
+        const points: EquityCurvePoint[] = response.data ?? [];
+        setEquityCurve(points);
+        if (response.latest) applySnapshot(response.latest);
+      } catch {
+        // 조용히 실패, websocket으로 계속 시도
+      }
+    };
+
+    const connect = () => {
+      ws = new WebSocket(`${WS_BASE}/ws/portfolio`);
+
+      ws.onmessage = (e) => {
+        try {
+          const raw = JSON.parse(e.data) as unknown;
+          if (raw === "pong") return;
+          const data = raw as EquityCurvePoint & { type?: string };
+          if (data.type === "portfolio_snapshot") {
+            applySnapshot(data);
+          }
+        } catch {
+          // 무시
+        }
+      };
+
+      ws.onopen = () => {
+        const pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send("ping");
+        }, 30_000);
+        ws.addEventListener("close", () => clearInterval(pingInterval));
+      };
+
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 3_000);
+      };
+      ws.onerror = () => ws.close();
+    };
+
+    loadInitialCurve();
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [addEquityPoint, setDailyPnl, setEquity, setEquityCurve]);
 }

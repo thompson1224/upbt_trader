@@ -1,7 +1,7 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/services/api";
-import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle } from "lucide-react";
+import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 
@@ -11,6 +11,15 @@ export default function SettingsPage() {
   const [groqKey, setGroqKey] = useState("");
   const [showSecrets, setShowSecrets] = useState(false);
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
+  const [loadingProtection, setLoadingProtection] = useState(true);
+
+  useEffect(() => {
+    api.settings
+      .getExternalPositionStopLoss()
+      .then(({ enabled }) => setExternalStopLossEnabled(enabled))
+      .finally(() => setLoadingProtection(false));
+  }, []);
 
   const handleSave = async () => {
     setStatus("saving");
@@ -21,6 +30,7 @@ export default function SettingsPage() {
       if (groqKey) {
         await api.settings.setGroqKey(groqKey);
       }
+      await api.settings.setExternalPositionStopLoss(externalStopLossEnabled);
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
     } catch {
@@ -82,6 +92,37 @@ export default function SettingsPage() {
             <p className="text-xs text-gray-600 mt-2">
               console.groq.com에서 무료 발급 — llama-3.1-8b-instant 모델 (14,400 req/day 무료)
             </p>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <h2 className="font-semibold text-sm">외부 보유분 자동 손절</h2>
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-gray-300">
+                  전략이 직접 연 포지션이 아닌, 계좌에 이미 있던 코인에 기본 손절을 적용합니다.
+                </p>
+                <p className="text-xs text-gray-600 mt-2">
+                  기본값은 OFF입니다. 외부 보유분에는 자동 익절은 적용하지 않고, ON일 때만 기본 손절만 허용합니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={loadingProtection}
+                onClick={() => setExternalStopLossEnabled((v) => !v)}
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                  externalStopLossEnabled ? "bg-amber-500" : "bg-gray-700"
+                } ${loadingProtection ? "opacity-50" : ""}`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                    externalStopLossEnabled ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
           </section>
 
           <div className="flex items-center gap-3">

@@ -93,7 +93,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-모든 서비스가 `Up` 상태인지 확인:
+기본 서비스가 `Up` 상태인지 확인:
 
 ```
 NAME                            STATUS
@@ -103,10 +103,11 @@ upbit-ai-trader-gateway-1       Up
 upbit-ai-trader-market_data-1   Up
 upbit-ai-trader-strategy-1      Up
 upbit-ai-trader-execution-1     Up
-upbit-ai-trader-risk-1          Up
-upbit-ai-trader-backtest-1      Up
 upbit-ai-trader-frontend-1      Up
 ```
+
+> `risk`, `backtest` 서비스는 현재 기본 기동 대상이 아닌 stub 프로필입니다.
+> 필요할 때만 `docker compose --profile stub up -d`로 올리세요.
 
 ### 2-5. 웹앱 접속
 
@@ -149,12 +150,17 @@ upbit-ai-trader-frontend-1      Up
 docker compose restart strategy execution gateway
 ```
 
-### 방법 B — 웹 UI (임시 저장, 재시작 시 초기화)
+### 방법 B — 웹 UI
 
 1. http://localhost:3000/settings 접속
 2. API 키 입력 후 **저장** 버튼
 
-> ⚠️ 웹 UI로 저장한 키는 컨테이너 재시작 시 초기화됩니다. `.env` 방법을 권장합니다.
+주의:
+
+- 업비트 키는 Redis에 암호화 저장되어 기본 컨테이너 재시작 후에도 유지됩니다.
+- `docker compose down -v` 또는 Redis 볼륨 삭제 시 초기화됩니다.
+- Groq 키는 런타임 반영용이라 재시작 후 다시 넣거나 `.env`에 유지하는 편이 안전합니다.
+- 운영 기준으로는 `.env` 또는 별도 시크릿 관리 방식을 권장합니다.
 
 ---
 
@@ -178,6 +184,15 @@ docker compose restart gateway          # API 키 설정 변경 후
 docker compose restart strategy         # Groq AI 설정 변경 후
 docker compose restart execution        # Risk 설정 변경 후
 docker compose restart market_data      # 시세 데이터가 업데이트되지 않을 때
+```
+
+### 운영 런북
+
+반복 운영 절차는 별도 문서:
+
+```bash
+cat OPERATIONS_RUNBOOK.md
+./scripts/ops_smoke_check.sh
 ```
 
 ### 로그 확인
