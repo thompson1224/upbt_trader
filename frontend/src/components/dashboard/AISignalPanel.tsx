@@ -6,9 +6,8 @@ import ConfidenceFilter from "./ConfidenceFilter";
 
 export default function AISignalPanel() {
   const minConfidence = useMarketStore((s) => s.minConfidence);
-  const signals = useMarketStore((s) =>
-    s.signals.filter((sig) => sig.confidence >= minConfidence)
-  );
+  const allSignals = useMarketStore((s) => s.signals);
+  const signals = allSignals.filter((sig) => sig.confidence >= minConfidence);
 
   return (
     <div className="flex flex-col h-full">

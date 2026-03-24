@@ -4,7 +4,7 @@ import { useMarketStore } from "@/store/useMarketStore";
 import { useTradeStore } from "@/store/useTradeStore";
 import { useNotificationStore, NotificationType } from "@/store/useNotificationStore";
 import { EquityCurvePoint, TickerData, SignalData } from "@/types/market";
-import { api } from "@/services/api";
+import { api, mapSignalData } from "@/services/api";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
@@ -26,7 +26,8 @@ function mapTickerPayload(data: Record<string, unknown>): TickerData {
 export function useUpbitMarketWS(codes: string[]) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { updateTicker, setConnected } = useMarketStore();
+  const updateTicker = useMarketStore((s) => s.updateTicker);
+  const setConnected = useMarketStore((s) => s.setConnected);
 
   useEffect(() => {
     function connect() {
@@ -71,23 +72,18 @@ export function useUpbitMarketWS(codes: string[]) {
   }, [codes, setConnected, updateTicker]);
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 export function useSignalWS() {
   const wsRef = useRef<WebSocket | null>(null);
-  const { addSignal, setSignals } = useMarketStore();
+  const addSignal = useMarketStore((s) => s.addSignal);
+  const setSignals = useMarketStore((s) => s.setSignals);
 
   useEffect(() => {
     // 초기 신호 로드: 최근 buy/sell 신호 50개 (hold 제외)
     const loadInitialSignals = async () => {
       try {
-        const [buyRes, sellRes] = await Promise.all([
-          fetch(`${API_BASE}/api/v1/signals?side=buy&limit=25`),
-          fetch(`${API_BASE}/api/v1/signals?side=sell&limit=25`),
-        ]);
         const [buyData, sellData] = await Promise.all([
-          buyRes.json(),
-          sellRes.json(),
+          api.signals.list({ side: "buy", limit: 25 }),
+          api.signals.list({ side: "sell", limit: 25 }),
         ]);
         const combined: SignalData[] = [...buyData, ...sellData].sort(
           (a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()
@@ -104,7 +100,7 @@ export function useSignalWS() {
 
     ws.onmessage = (e) => {
       try {
-        const signal: SignalData = JSON.parse(e.data);
+        const signal = mapSignalData(JSON.parse(e.data));
         if (signal.side !== "hold") addSignal(signal);
       } catch {
         // 무시

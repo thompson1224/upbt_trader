@@ -19,6 +19,42 @@ export const queryClient = new QueryClient({
   },
 });
 
+type RawSignalData = {
+  id: number;
+  strategy_id: string;
+  coin_id: number;
+  market: string;
+  timeframe: string;
+  ts: string;
+  ta_score: number;
+  sentiment_score: number | null;
+  final_score: number;
+  confidence: number;
+  side: "buy" | "sell" | "hold";
+  status: string;
+  suggested_stop_loss: number | null;
+  suggested_take_profit: number | null;
+};
+
+export function mapSignalData(signal: RawSignalData) {
+  return {
+    id: signal.id,
+    strategyId: signal.strategy_id,
+    coinId: signal.coin_id,
+    market: signal.market,
+    timeframe: signal.timeframe,
+    ts: signal.ts,
+    taScore: signal.ta_score,
+    sentimentScore: signal.sentiment_score,
+    finalScore: signal.final_score,
+    confidence: signal.confidence,
+    side: signal.side,
+    status: signal.status,
+    suggestedStopLoss: signal.suggested_stop_loss,
+    suggestedTakeProfit: signal.suggested_take_profit,
+  };
+}
+
 // API 함수들
 export const api = {
   markets: {
@@ -31,7 +67,9 @@ export const api = {
   },
   signals: {
     list: (params?: { market?: string; side?: string; limit?: number }) =>
-      apiClient.get("/signals", { params }).then((r) => r.data),
+      apiClient
+        .get("/signals", { params })
+        .then((r) => (r.data as RawSignalData[]).map(mapSignalData)),
   },
   orders: {
     list: (state?: string) =>

@@ -6,7 +6,8 @@ import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
 
 export default function AutoTradeToggle() {
-  const { isAutoTrading, setAutoTrading } = useTradeStore();
+  const isAutoTrading = useTradeStore((s) => s.isAutoTrading);
+  const setAutoTrading = useTradeStore((s) => s.setAutoTrading);
   const [showConfirm, setShowConfirm] = useState(false);
   const [pending, setPending] = useState(false);
 

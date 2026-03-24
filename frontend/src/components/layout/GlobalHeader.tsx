@@ -9,7 +9,9 @@ import AutoTradeToggle from "./AutoTradeToggle";
 
 export default function GlobalHeader() {
   const tickers = useMarketStore((s) => s.tickers);
-  const { totalEquity, dailyPnl, setAutoTrading } = useTradeStore();
+  const totalEquity = useTradeStore((s) => s.totalEquity);
+  const dailyPnl = useTradeStore((s) => s.dailyPnl);
+  const setAutoTrading = useTradeStore((s) => s.setAutoTrading);
 
   const btc = tickers["KRW-BTC"];
   const eth = tickers["KRW-ETH"];
