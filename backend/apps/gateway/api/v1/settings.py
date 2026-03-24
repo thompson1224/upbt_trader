@@ -28,11 +28,6 @@ class GeminiKeyRequest(BaseModel):
     api_key: str
 
 
-class OllamaUrlRequest(BaseModel):
-    base_url: str
-    model: str | None = None
-
-
 class AutoTradeRequest(BaseModel):
     enabled: bool
 
@@ -58,17 +53,6 @@ async def set_gemini_key(req: GeminiKeyRequest):
     """Gemini API 키 저장 (런타임 환경변수 업데이트). 반영은 서비스 재시작 필요."""
     os.environ["GEMINI_API_KEY"] = req.api_key
     return None
-
-
-# ── Ollama 서버 URL ─────────────────────────────────────────
-
-@router.patch("/settings/ollama-url")
-async def set_ollama_url(req: OllamaUrlRequest):
-    """Ollama 엔드포인트 URL 및 모델 설정. 반영은 strategy 서비스 재시작 필요."""
-    os.environ["OLLAMA_BASE_URL"] = req.base_url
-    if req.model:
-        os.environ["OLLAMA_MODEL"] = req.model
-    return {"base_url": req.base_url, "model": req.model}
 
 
 # ── 자동매매 ON/OFF ─────────────────────────────────────────

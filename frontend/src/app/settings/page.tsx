@@ -1,15 +1,14 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/services/api";
-import { Key, Server, Eye, EyeOff, CheckCircle, AlertCircle } from "lucide-react";
+import { Key, Gem, Eye, EyeOff, CheckCircle, AlertCircle } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 
 export default function SettingsPage() {
   const [upbitAccess, setUpbitAccess] = useState("");
   const [upbitSecret, setUpbitSecret] = useState("");
-  const [ollamaUrl, setOllamaUrl] = useState("");
-  const [ollamaModel, setOllamaModel] = useState("qwen2.5:7b");
+  const [geminiKey, setGeminiKey] = useState("");
   const [showSecrets, setShowSecrets] = useState(false);
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
 
@@ -19,8 +18,8 @@ export default function SettingsPage() {
       if (upbitAccess && upbitSecret) {
         await api.settings.setUpbitKeys(upbitAccess, upbitSecret);
       }
-      if (ollamaUrl) {
-        await api.settings.setOllamaUrl(ollamaUrl, ollamaModel || undefined);
+      if (geminiKey) {
+        await api.settings.setGeminiKey(geminiKey);
       }
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
@@ -70,32 +69,19 @@ export default function SettingsPage() {
 
           <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
             <div className="flex items-center gap-2 mb-4">
-              <Server className="w-4 h-4 text-blue-400" />
-              <h2 className="font-semibold text-sm">Ollama 서버</h2>
+              <Gem className="w-4 h-4 text-blue-400" />
+              <h2 className="font-semibold text-sm">Gemini API 키</h2>
             </div>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">서버 URL</label>
-                <input
-                  type="url"
-                  value={ollamaUrl}
-                  onChange={(e) => setOllamaUrl(e.target.value)}
-                  placeholder="http://192.168.x.x:11434"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
-                />
-                <p className="text-xs text-gray-600 mt-1">로컬 또는 원격 Ollama 인스턴스 주소</p>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">모델</label>
-                <input
-                  type="text"
-                  value={ollamaModel}
-                  onChange={(e) => setOllamaModel(e.target.value)}
-                  placeholder="qwen2.5:7b"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
-                />
-              </div>
-            </div>
+            <input
+              type={showSecrets ? "text" : "password"}
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder="AIzaSy..."
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
+            />
+            <p className="text-xs text-gray-600 mt-2">
+              Google AI Studio에서 발급 — gemini-2.0-flash-lite 모델 사용 (월 ~$2)
+            </p>
           </section>
 
           <div className="flex items-center gap-3">

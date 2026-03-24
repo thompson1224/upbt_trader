@@ -57,8 +57,6 @@ export const api = {
       }),
     setGeminiKey: (apiKey: string) =>
       apiClient.post("/secrets/gemini-key", { api_key: apiKey }),
-    setOllamaUrl: (baseUrl: string, model?: string) =>
-      apiClient.patch("/settings/ollama-url", { base_url: baseUrl, model }),
     setAutoTrade: (enabled: boolean) =>
       apiClient.patch("/settings/auto-trade", { enabled }).then((r) => r.data),
     getAutoTrade: () =>

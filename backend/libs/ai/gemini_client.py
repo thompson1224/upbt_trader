@@ -32,21 +32,22 @@ class SentimentResult(TypedDict):
     reasoning: str
 
 
-_CALL_INTERVAL_SEC = 3.0   # 호출 간 최소 간격 (최대 ~20 RPM, Free Tier 30 RPM 한도 대응)
-
-
 class GeminiClient:
-    """Gemini API를 사용한 감성 분석 클라이언트."""
+    """Gemini API를 사용한 감성 분석 클라이언트 (Paid 티어 최적화)."""
 
     def __init__(self):
         settings = get_settings()
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel(
+        self._model = genai.GenerativeModel(
             model_name=settings.gemini_model,
             system_instruction=SENTIMENT_SYSTEM_PROMPT,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",  # JSON 강제 모드 (마크다운 펜스 방지)
+                temperature=0.3,
+                max_output_tokens=512,
+            ),
         )
-        self._lock = asyncio.Lock()
-        self._last_call_time: float = 0.0
+        self._semaphore = asyncio.Semaphore(5)  # 최대 5개 동시 호출 (Paid: 2000 RPM)
 
     async def analyze_sentiment(
         self,
@@ -67,23 +68,9 @@ class GeminiClient:
         )
 
         try:
-            async with self._lock:
-                now = asyncio.get_event_loop().time()
-                wait = _CALL_INTERVAL_SEC - (now - self._last_call_time)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                self._last_call_time = asyncio.get_event_loop().time()
-
-            response = await self.model.generate_content_async(prompt)
-            raw_text = response.text.strip()
-
-            # JSON 블록 추출
-            if "```" in raw_text:
-                raw_text = raw_text.split("```")[1]
-                if raw_text.startswith("json"):
-                    raw_text = raw_text[4:]
-
-            result = json.loads(raw_text)
+            async with self._semaphore:
+                response = await self._model.generate_content_async(prompt)
+            result = json.loads(response.text)
             return self._validate_result(result)
 
         except json.JSONDecodeError as e:
