@@ -262,14 +262,17 @@ class ExecutionService:
 
         try:
             if signal.side == "buy":
+                # 업비트 시장가 매수: ord_type="price" + price=KRW금액
+                krw_amount = round(final_qty * entry_price)
                 result = await self.upbit.place_order(
                     market=coin.market,
                     side="bid",
-                    volume=final_qty,
-                    price=None,
-                    ord_type="market",
+                    volume=None,
+                    price=krw_amount,
+                    ord_type="price",
                 )
             else:
+                # 업비트 시장가 매도: ord_type="market" + volume=코인수량
                 result = await self.upbit.place_order(
                     market=coin.market,
                     side="ask",
@@ -572,6 +575,7 @@ class ExecutionService:
             db_signal.status = status
             if reason:
                 db_signal.rejection_reason = reason[:200]
+            await db.commit()
 
 
 async def main():
