@@ -24,7 +24,7 @@ class UpbitKeyRequest(BaseModel):
     secret_key: str
 
 
-class GeminiKeyRequest(BaseModel):
+class GroqKeyRequest(BaseModel):
     api_key: str
 
 
@@ -46,12 +46,12 @@ async def set_upbit_keys(req: UpbitKeyRequest):
     return None
 
 
-# ── Gemini API 키 ───────────────────────────────────────────
+# ── Groq API 키 ─────────────────────────────────────────────
 
-@router.post("/secrets/gemini-key", status_code=204)
-async def set_gemini_key(req: GeminiKeyRequest):
-    """Gemini API 키 저장 (런타임 환경변수 업데이트). 반영은 서비스 재시작 필요."""
-    os.environ["GEMINI_API_KEY"] = req.api_key
+@router.post("/secrets/groq-key", status_code=204)
+async def set_groq_key(req: GroqKeyRequest):
+    """Groq API 키 저장 (런타임 환경변수 업데이트). 반영은 서비스 재시작 필요."""
+    os.environ["GROQ_API_KEY"] = req.api_key
     return None
 
 

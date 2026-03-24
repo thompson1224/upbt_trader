@@ -1,14 +1,14 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/services/api";
-import { Key, Gem, Eye, EyeOff, CheckCircle, AlertCircle } from "lucide-react";
+import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 
 export default function SettingsPage() {
   const [upbitAccess, setUpbitAccess] = useState("");
   const [upbitSecret, setUpbitSecret] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
+  const [groqKey, setGroqKey] = useState("");
   const [showSecrets, setShowSecrets] = useState(false);
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
 
@@ -18,8 +18,8 @@ export default function SettingsPage() {
       if (upbitAccess && upbitSecret) {
         await api.settings.setUpbitKeys(upbitAccess, upbitSecret);
       }
-      if (geminiKey) {
-        await api.settings.setGeminiKey(geminiKey);
+      if (groqKey) {
+        await api.settings.setGroqKey(groqKey);
       }
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
@@ -69,18 +69,18 @@ export default function SettingsPage() {
 
           <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
             <div className="flex items-center gap-2 mb-4">
-              <Gem className="w-4 h-4 text-blue-400" />
-              <h2 className="font-semibold text-sm">Gemini API 키</h2>
+              <Zap className="w-4 h-4 text-orange-400" />
+              <h2 className="font-semibold text-sm">Groq API 키</h2>
             </div>
             <input
               type={showSecrets ? "text" : "password"}
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="AIzaSy..."
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
+              value={groqKey}
+              onChange={(e) => setGroqKey(e.target.value)}
+              placeholder="gsk_..."
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-500 font-mono"
             />
             <p className="text-xs text-gray-600 mt-2">
-              Google AI Studio에서 발급 — gemini-2.0-flash-lite 모델 사용 (월 ~$2)
+              console.groq.com에서 무료 발급 — llama-3.1-8b-instant 모델 (14,400 req/day 무료)
             </p>
           </section>
 

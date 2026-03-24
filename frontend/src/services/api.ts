@@ -55,8 +55,8 @@ export const api = {
         access_key: accessKey,
         secret_key: secretKey,
       }),
-    setGeminiKey: (apiKey: string) =>
-      apiClient.post("/secrets/gemini-key", { api_key: apiKey }),
+    setGroqKey: (apiKey: string) =>
+      apiClient.post("/secrets/groq-key", { api_key: apiKey }),
     setAutoTrade: (enabled: boolean) =>
       apiClient.patch("/settings/auto-trade", { enabled }).then((r) => r.data),
     getAutoTrade: () =>

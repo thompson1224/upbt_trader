@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     upbit_access_key: str = ""
     upbit_secret_key: str = ""
 
-    # Gemini API
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash-lite"
+    # Groq API (무료 14,400 req/day)
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.1-8b-instant"
 
     # Risk Management
     risk_max_daily_loss_pct: float = 0.03

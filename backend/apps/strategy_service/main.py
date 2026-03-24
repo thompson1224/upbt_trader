@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""전략 서비스 - 1분봉 수신 → 지표 계산 → Gemini 감성 → 신호 생성"""
+"""전략 서비스 - 1분봉 수신 → 지표 계산 → Groq 감성 → 신호 생성"""
 import asyncio
 import json
 import logging
@@ -13,7 +13,7 @@ from sqlalchemy import select, desc, func
 from libs.config import get_settings
 from libs.db.session import get_session_factory
 from libs.db.models import Coin, Candle1m, IndicatorSnapshot, SentimentSnapshot, Signal
-from libs.ai.gemini_client import GeminiClient
+from libs.ai.groq_client import GroqClient
 from apps.strategy_service.indicators.calculator import compute_indicators
 from apps.strategy_service.fusion.signal_fusion import fuse_signals
 from apps.risk_service.guards.pre_trade_guard import PositionSizer
@@ -33,7 +33,7 @@ TOP_MARKETS_BY_VOLUME = 20   # 24h 거래량 상위 N개 코인만 처리
 class StrategyRunner:
     def __init__(self):
         self.settings = get_settings()
-        self.gemini = GeminiClient()
+        self.groq = GroqClient()
         self.session_factory = get_session_factory()
         self._sentiment_cache: dict[str, tuple[float, float, datetime]] = {}
         # market -> (score, confidence, updated_at)
@@ -195,7 +195,7 @@ class StrategyRunner:
     async def _get_sentiment(
         self, coin: Coin, df: pd.DataFrame, ind
     ) -> tuple[float | None, float | None]:
-        """캐시된 감성 점수 반환, 만료 시 Gemini API 호출."""
+        """캐시된 감성 점수 반환, 만료 시 Groq API 호출."""
         now = datetime.now(tz=timezone.utc)
         cached = self._sentiment_cache.get(coin.market)
 
@@ -204,7 +204,7 @@ class StrategyRunner:
             if (now - updated_at).total_seconds() < SENTIMENT_INTERVAL_SEC:
                 return score, conf
 
-        # Gemini API 호출
+        # Groq API 호출
         current_price = float(df["close"].iloc[-1])
         price_change = float(df["close"].pct_change(24).iloc[-1]) * 100
 
@@ -216,7 +216,7 @@ class StrategyRunner:
         if ind.bb_pct:
             ta_context += f", BB%B: {ind.bb_pct:.2f}"
 
-        result = await self.gemini.analyze_sentiment(
+        result = await self.groq.analyze_sentiment(
             market=coin.market,
             current_price=current_price,
             price_change_24h=price_change,
@@ -239,10 +239,10 @@ class StrategyRunner:
             snap = SentimentSnapshot(
                 coin_id=coin.id,
                 ts=now,
-                source="gemini",
+                source="groq",
                 sentiment_score=result["sentiment_score"],
                 confidence=result["confidence"],
-                model_version=self.settings.gemini_model,
+                model_version=self.settings.groq_model,
                 summary=result.get("summary"),
                 keywords=str(result.get("keywords", [])),
             )

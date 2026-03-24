@@ -1,15 +1,17 @@
 from __future__ import annotations
-"""Gemini API 클라이언트 - 감성 분석 및 시장 인사이트"""
+"""Groq API 클라이언트 - 감성 분석 전용 (무료 14,400 req/day)"""
 import asyncio
 import json
 import logging
 from typing import TypedDict
 
-import google.generativeai as genai
+import httpx
 
 from libs.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 SENTIMENT_SYSTEM_PROMPT = """당신은 암호화폐 시장 분석 전문가입니다.
 주어진 시장 데이터를 분석하여 투자 감성을 평가하세요.
@@ -32,22 +34,14 @@ class SentimentResult(TypedDict):
     reasoning: str
 
 
-class GeminiClient:
-    """Gemini API를 사용한 감성 분석 클라이언트 (Paid 티어 최적화)."""
+class GroqClient:
+    """Groq API를 사용한 감성 분석 클라이언트 (무료 14,400 req/day)."""
 
     def __init__(self):
         settings = get_settings()
-        genai.configure(api_key=settings.gemini_api_key)
-        self._model = genai.GenerativeModel(
-            model_name=settings.gemini_model,
-            system_instruction=SENTIMENT_SYSTEM_PROMPT,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",  # JSON 강제 모드 (마크다운 펜스 방지)
-                temperature=0.3,
-                max_output_tokens=512,
-            ),
-        )
-        self._semaphore = asyncio.Semaphore(5)  # 최대 5개 동시 호출 (Paid: 2000 RPM)
+        self._api_key = settings.groq_api_key
+        self._model = settings.groq_model
+        self._semaphore = asyncio.Semaphore(5)
 
     async def analyze_sentiment(
         self,
@@ -62,22 +56,44 @@ class GeminiClient:
         시장 감성 분석.
         실패 시 None 반환 → TA-only 모드 폴백.
         """
-        prompt = self._build_prompt(
-            market, current_price, price_change_24h, volume_24h,
-            news_snippets, ta_context,
-        )
+        if not self._api_key:
+            return None
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": SENTIMENT_SYSTEM_PROMPT},
+                {"role": "user", "content": self._build_prompt(
+                    market, current_price, price_change_24h,
+                    volume_24h, news_snippets, ta_context,
+                )},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.3,
+            "max_tokens": 512,
+        }
 
         try:
             async with self._semaphore:
-                response = await self._model.generate_content_async(prompt)
-            result = json.loads(response.text)
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        GROQ_API_URL,
+                        headers={"Authorization": f"Bearer {self._api_key}"},
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+
+            result = json.loads(resp.json()["choices"][0]["message"]["content"])
             return self._validate_result(result)
 
         except json.JSONDecodeError as e:
-            logger.warning("Gemini JSON parse error for %s: %s", market, e)
+            logger.warning("Groq JSON parse error for %s: %s", market, e)
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.error("Groq HTTP error for %s: %s %s", market, e.response.status_code, e.response.text[:200])
             return None
         except Exception as e:
-            logger.error("Gemini API error for %s: %s", market, e)
+            logger.error("Groq error for %s: %s", market, e)
             return None
 
     def _build_prompt(
@@ -100,7 +116,6 @@ class GeminiClient:
         if news_snippets:
             parts.append("\n관련 뉴스/공시:")
             parts.extend([f"- {s}" for s in news_snippets[:5]])
-
         return "\n".join(parts)
 
     def _validate_result(self, result: dict) -> SentimentResult:
