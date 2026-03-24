@@ -20,6 +20,23 @@ logger = logging.getLogger(__name__)
 
 _candle_buffer: dict[str, list] = {}  # market -> [tick]
 _redis: aioredis.Redis | None = None
+_redis_url: str = ""
+
+
+async def _get_redis() -> aioredis.Redis:
+    """Redis 클라이언트 반환. stale 연결이면 재생성."""
+    global _redis
+    try:
+        if _redis:
+            await _redis.ping()
+            return _redis
+    except Exception:
+        logger.warning("Redis connection stale, reconnecting...")
+        _redis = None
+
+    _redis = aioredis.from_url(_redis_url)
+    logger.info("Redis reconnected")
+    return _redis
 
 
 async def on_tick(data: dict):
@@ -32,11 +49,11 @@ async def on_tick(data: dict):
         return
 
     # Redis로 실시간 ticker 전달
-    if _redis:
-        try:
-            await _redis.publish("upbit:ticker", json.dumps(data))
-        except Exception:
-            pass
+    try:
+        r = await _get_redis()
+        await r.publish("upbit:ticker", json.dumps(data))
+    except Exception as e:
+        logger.debug("Redis publish failed: %s", e)
 
     # 1분봉 누적
     ts = datetime.fromtimestamp(data.get("tms", 0) / 1000, tz=timezone.utc)
@@ -143,13 +160,13 @@ async def sync_krw_markets():
 
 
 async def main():
-    global _redis
+    global _redis, _redis_url
     settings = get_settings()
     logger.info("Starting market data service...")
 
     # Redis 연결
-    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    _redis = aioredis.from_url(redis_url)
+    _redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    _redis = aioredis.from_url(_redis_url)
 
     # 마켓 동기화
     markets = await sync_krw_markets()

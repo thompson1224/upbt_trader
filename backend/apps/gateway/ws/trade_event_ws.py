@@ -31,43 +31,63 @@ async def _broadcast(connections: Set[WebSocket], data: dict):
 async def start_trade_event_subscriber():
     """Redis upbit:trade_event → /ws/trade-events 브로드캐스트."""
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    while True:
-        try:
-            r = aioredis.from_url(redis_url)
-            pubsub = r.pubsub()
-            await pubsub.subscribe("upbit:trade_event")
-            logger.info("Trade Event WS: Redis subscriber connected")
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    try:
-                        data = json.loads(message["data"])
-                        await _broadcast(_trade_connections, data)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Trade Event Redis subscriber error: %s, retrying in 3s", e)
-            await asyncio.sleep(3)
+    r = None
+    try:
+        while True:
+            try:
+                r = aioredis.from_url(redis_url)
+                pubsub = r.pubsub()
+                await pubsub.subscribe("upbit:trade_event")
+                logger.info("Trade Event WS: Redis subscriber connected")
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        try:
+                            data = json.loads(message["data"])
+                            await _broadcast(_trade_connections, data)
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Trade Event Redis subscriber error: %s, retrying in 3s", e)
+                if r:
+                    await r.aclose()
+                    r = None
+                await asyncio.sleep(3)
+    finally:
+        if r:
+            await r.aclose()
 
 
 async def start_portfolio_subscriber():
     """Redis upbit:position_update → /ws/portfolio 브로드캐스트."""
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    while True:
-        try:
-            r = aioredis.from_url(redis_url)
-            pubsub = r.pubsub()
-            await pubsub.subscribe("upbit:position_update")
-            logger.info("Portfolio WS: Redis subscriber connected")
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    try:
-                        data = json.loads(message["data"])
-                        await _broadcast(_portfolio_connections, data)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Portfolio Redis subscriber error: %s, retrying in 3s", e)
-            await asyncio.sleep(3)
+    r = None
+    try:
+        while True:
+            try:
+                r = aioredis.from_url(redis_url)
+                pubsub = r.pubsub()
+                await pubsub.subscribe("upbit:position_update")
+                logger.info("Portfolio WS: Redis subscriber connected")
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        try:
+                            data = json.loads(message["data"])
+                            await _broadcast(_portfolio_connections, data)
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Portfolio Redis subscriber error: %s, retrying in 3s", e)
+                if r:
+                    await r.aclose()
+                    r = None
+                await asyncio.sleep(3)
+    finally:
+        if r:
+            await r.aclose()
 
 
 @router.websocket("/ws/trade-events")

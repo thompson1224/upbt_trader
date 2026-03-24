@@ -16,22 +16,32 @@ _signal_connections: Set[WebSocket] = set()
 async def start_redis_subscriber():
     """Redis pub/sub에서 신호 수신 → WS 브로드캐스트."""
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    while True:
-        try:
-            r = aioredis.from_url(redis_url)
-            pubsub = r.pubsub()
-            await pubsub.subscribe("upbit:signal")
-            logger.info("Signal WS: Redis subscriber connected")
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    try:
-                        data = json.loads(message["data"])
-                        await broadcast_signal(data)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Signal Redis subscriber error: %s, retrying in 3s", e)
-            await asyncio.sleep(3)
+    r = None
+    try:
+        while True:
+            try:
+                r = aioredis.from_url(redis_url)
+                pubsub = r.pubsub()
+                await pubsub.subscribe("upbit:signal")
+                logger.info("Signal WS: Redis subscriber connected")
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        try:
+                            data = json.loads(message["data"])
+                            await broadcast_signal(data)
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Signal Redis subscriber error: %s, retrying in 3s", e)
+                if r:
+                    await r.aclose()
+                    r = None
+                await asyncio.sleep(3)
+    finally:
+        if r:
+            await r.aclose()
 
 
 async def broadcast_signal(signal_data: dict):

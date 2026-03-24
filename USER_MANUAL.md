@@ -1,7 +1,7 @@
 # Upbit AI Trader — 사용자 매뉴얼
 
 > 업비트 기반 AI 자동매매 웹앱 · Docker 실행 가이드
-> 버전: v0.2.0 (2026-03-24)
+> 버전: v0.2.1 (2026-03-24)
 
 ---
 
@@ -17,6 +17,7 @@
 8. [백테스트 실행](#8-백테스트-실행)
 9. [트러블슈팅](#9-트러블슈팅)
 10. [API 레퍼런스](#10-api-레퍼런스)
+11. [아키텍처 개요](#11-아키텍처-개요)
 
 ---
 
@@ -25,6 +26,8 @@
 ### 필수
 
 - **Docker Desktop** (macOS: [docker.com](https://www.docker.com/products/docker-desktop/))
+- **업비트 계정** + API 키 (주문하기 권한)
+- **Groq API 키** (무료, [console.groq.com](https://console.groq.com))
 
 ### 확인
 
@@ -48,18 +51,30 @@ cd upbt_trader
 
 ### 2-2. 환경변수 파일 설정
 
-`backend/.env` 파일에 API 키를 입력합니다:
+`backend/.env` 파일을 열어 API 키 3개를 입력합니다:
 
 ```dotenv
-# Upbit API
-UPBIT_ACCESS_KEY=여기에_액세스키_입력
-UPBIT_SECRET_KEY=여기에_시크릿키_입력
+# ── 반드시 입력해야 할 항목 ──────────────────────────────
 
-# Groq API (무료 AI 감성분석 - console.groq.com 에서 발급)
-GROQ_API_KEY=gsk_...
+# 업비트 API (upbit.com → 마이페이지 → Open API 관리)
+UPBIT_ACCESS_KEY=여기에_업비트_액세스키_입력
+UPBIT_SECRET_KEY=여기에_업비트_시크릿키_입력
+
+# Groq AI API (console.groq.com → API Keys → Create API Key, 무료)
+GROQ_API_KEY=gsk_여기에_Groq_키_입력
+
+# ── 기본값으로 동작하는 항목 (변경 불필요) ──────────────
+
+APP_ENV=local
+DATABASE_URL=postgresql+psycopg://trader:trader_secret@postgres:5432/upbit_trader
+REDIS_URL=redis://redis:6379/0
+JWT_SECRET=9e94348ec885a81c3c6c41bbc501bd9a2ed5b56492acdb7291df2a19f96a73ff
+ENCRYPTION_KEY=h-b1lBh5HVD8nKT0S5YkdHdyVSOiPHmU62_xT1T-RXQ=
+GROQ_MODEL=llama-3.1-8b-instant
+RISK_MAX_DAILY_LOSS_PCT=0.03
+RISK_MAX_POSITION_PCT=0.10
+RISK_MAX_SINGLE_TRADE_PCT=0.01
 ```
-
-> 나머지 값들(DB, Redis, JWT 등)은 기본값으로 동작합니다.
 
 ### 2-3. 전체 서비스 빌드 및 실행
 
@@ -67,7 +82,10 @@ GROQ_API_KEY=gsk_...
 docker compose up -d --build
 ```
 
-최초 실행 시 Docker 이미지 빌드로 **5~10분** 소요됩니다.
+**최초 실행 시 Docker 이미지 빌드로 5~10분 소요됩니다.**
+
+> ⚠️ **주의**: 코드 변경 후에는 반드시 `--build` 옵션을 붙여야 변경사항이 반영됩니다.
+> `docker compose up -d` (빌드 없이 시작)는 이미지를 재사용합니다.
 
 ### 2-4. 실행 확인
 
@@ -90,11 +108,11 @@ upbit-ai-trader-backtest-1      Up
 upbit-ai-trader-frontend-1      Up
 ```
 
-### 2-5. 접속
+### 2-5. 웹앱 접속
 
 | URL | 설명 |
 |-----|------|
-| **http://localhost:3000** | 웹 앱 (대시보드) |
+| **http://localhost:3000** | 🌐 웹 앱 메인 (여기서 시작) |
 | http://localhost:8000/docs | API 문서 (Swagger UI) |
 | http://localhost:8000/health | 게이트웨이 상태 확인 |
 
@@ -102,45 +120,41 @@ upbit-ai-trader-frontend-1      Up
 
 ## 3. API 키 설정
 
-### 방법 A — `.env` 파일 직접 편집 (권장)
-
-`backend/.env` 파일 수정 후 서비스 재시작:
-
-```dotenv
-UPBIT_ACCESS_KEY=여기에_액세스키
-UPBIT_SECRET_KEY=여기에_시크릿키
-GROQ_API_KEY=gsk_...
-```
-
-```bash
-docker compose restart strategy execution gateway
-```
-
-### 방법 B — 웹 UI
-
-1. http://localhost:3000/settings 접속
-2. 업비트 API 키 / Groq API 키 입력 후 저장
-
-> ⚠️ 웹 UI로 저장한 키는 컨테이너 재시작 시 초기화됩니다. `.env` 방법(A)을 권장합니다.
-
----
-
 ### 업비트 API 키 발급
 
 1. [업비트](https://upbit.com) 로그인
-2. 마이페이지 → Open API 관리
-3. **주문하기** 권한 체크
-4. 현재 서버 IP 주소를 허용 IP에 추가
-5. Access Key / Secret Key 복사
+2. **마이페이지 → Open API 관리**
+3. **권한 선택**: `주문하기` 체크 (필수), `자산조회` 체크
+4. **허용 IP 주소**: 현재 서버 IP 추가
+   - 로컬 실행의 경우 `127.0.0.1` 또는 공인 IP
+   - 공인 IP 확인: `curl ifconfig.me`
+5. Access Key / Secret Key 복사 → `backend/.env`에 입력
 
-> **주의**: IP 허용 없이는 주문 시 `401 Unauthorized` 오류 발생.
+> ⚠️ **IP 허용 없이는 주문 시 `401 Unauthorized` 오류 발생**
 
-### Groq API 키 발급 (무료)
+### Groq API 키 발급 (무료, 신용카드 불필요)
 
 1. [console.groq.com](https://console.groq.com) 접속
 2. Google 계정으로 로그인
-3. "API Keys" → "Create API Key"
-4. `gsk_...` 형태 키 복사 (신용카드 불필요, 완전 무료)
+3. 좌측 메뉴 **API Keys** → **Create API Key**
+4. `gsk_...` 형태 키 복사 → `backend/.env`에 입력
+
+**무료 한도**: 14,400 요청/일, 6,000 tokens/분
+- 본 앱은 상위 10개 마켓만 분석하므로 일반적으로 한도 내 동작
+
+### 방법 A — `.env` 파일 (권장, 재시작 후에도 유지)
+
+```bash
+# backend/.env 편집 후
+docker compose restart strategy execution gateway
+```
+
+### 방법 B — 웹 UI (임시 저장, 재시작 시 초기화)
+
+1. http://localhost:3000/settings 접속
+2. API 키 입력 후 **저장** 버튼
+
+> ⚠️ 웹 UI로 저장한 키는 컨테이너 재시작 시 초기화됩니다. `.env` 방법을 권장합니다.
 
 ---
 
@@ -149,396 +163,630 @@ docker compose restart strategy execution gateway
 ### 시작 / 중지 / 재시작
 
 ```bash
-docker compose up -d          # 시작
-docker compose stop           # 중지 (데이터 유지)
-docker compose restart        # 전체 재시작
+docker compose up -d                    # 시작 (이미지 재빌드 없이)
+docker compose up -d --build            # 코드 변경 후 재빌드 + 시작
+docker compose stop                     # 중지 (데이터 유지)
+docker compose down                     # 중지 + 컨테이너 삭제 (볼륨 유지)
+docker compose down -v                  # 중지 + 컨테이너 + DB 볼륨 삭제
+docker compose restart                  # 전체 재시작 (이미지 재빌드 없음)
 ```
 
 ### 특정 서비스만 재시작
 
 ```bash
-docker compose restart strategy     # AI 신호 서비스 (Groq 설정 변경 후)
-docker compose restart execution    # 주문 실행 서비스
-docker compose restart gateway      # API 게이트웨이
-```
-
-### 완전 삭제 (데이터 포함)
-
-```bash
-docker compose down -v        # 컨테이너 + DB 볼륨 삭제
+docker compose restart gateway          # API 키 설정 변경 후
+docker compose restart strategy         # Groq AI 설정 변경 후
+docker compose restart execution        # Risk 설정 변경 후
+docker compose restart market_data      # 시세 데이터가 업데이트되지 않을 때
 ```
 
 ### 로그 확인
 
 ```bash
-docker compose logs -f strategy             # AI 신호 생성 실시간 로그
-docker compose logs -f execution            # 주문 실행 실시간 로그
-docker compose logs strategy --tail=30 | grep "Signal generated"   # 신호만 확인
-docker compose logs execution --tail=30 | grep -E "Order|rejected" # 주문만 확인
+# 실시간 로그
+docker compose logs -f strategy             # AI 신호 생성
+docker compose logs -f execution            # 주문 실행
+
+# 필터링 로그
+docker compose logs strategy --tail=50 | grep "Signal generated"
+docker compose logs execution --tail=50 | grep -E "Order|rejected|ERROR"
+docker compose logs gateway --tail=20       # Gateway 에러 확인
+```
+
+### 서비스 상태 상세 확인
+
+```bash
+# 각 서비스 리소스 사용량
+docker stats --no-stream
+
+# 특정 서비스 프로세스 확인
+docker compose top execution
 ```
 
 ---
 
 ## 5. 화면 구성 및 사용법
 
-### 5-1. 메인 대시보드 (`/`)
+### 5-1. 사이드바 네비게이션
+
+| 메뉴 | URL | 설명 |
+|------|-----|------|
+| 대시보드 | `/` | 차트, 시세, 신호, 포지션 |
+| 마켓 | `/market` | 전체 KRW 마켓 목록 |
+| 주문 내역 | `/orders` | 주문 이력 및 필터 |
+| 백테스트 | `/backtest` | 전략 검증 (개발 중) |
+| 설정 | `/settings` | API 키 관리 |
+
+---
+
+### 5-2. 메인 대시보드 (`/`)
 
 **접속:** http://localhost:3000
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  헤더: BTC/ETH 시세 | 총 자산 | 일 손익 | 자동매매 ON/OFF  │
-├──────────┬───────────────────────────┬───────────────────┤
-│          │   캔들 차트                │  AI 신호 패널      │
-│ 사이드바  │   (1분봉, LightweightCharts)│  [신뢰도 슬라이더] │
-│          │                           │  신호 목록         │
-│ - 대시보드│───────────────────────────│                   │
-│ - 마켓   │  마켓 워치리스트            │  포지션 현황       │
-│ - 주문내역│  (실시간 시세)             │  (실시간 P&L)     │
-│ - 백테스팅│                           │                   │
-│ - 설정   │                           │                   │
-└──────────┴───────────────────────────┴───────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  헤더: [자동매매 OFF/ON 토글] | 서비스명                       │
+├──────────┬───────────────────────────────┬──────────────────┤
+│          │   캔들 차트 (1분봉)             │  AI 신호 패널    │
+│ 사이드바  │   LightweightCharts           │  [신뢰도 슬라이더]│
+│          │   (마켓 클릭으로 전환)          │  신호 목록       │
+│ ─ 대시보드│                               │  (최신순)        │
+│ ─ 마켓   ├───────────────────────────────┤                  │
+│ ─ 주문   │  마켓 워치리스트               │  포지션 현황     │
+│ ─ 백테스트│  BTC / ETH / XRP / SOL ...    │  실시간 P&L (%)  │
+│ ─ 설정   │  실시간 가격 / 등락률           │  SL / TP 표시    │
+└──────────┴───────────────────────────────┴──────────────────┘
+                                         [토스트 알림 — 우하단]
 ```
 
-| 패널 | 설명 |
+---
+
+### 5-3. 자동매매 ON/OFF 토글
+
+헤더 우측의 **[자동매매]** 버튼:
+
+| 동작 | 결과 |
 |------|------|
-| **캔들 차트** | 선택된 마켓의 1분봉 차트 (실시간) |
-| **마켓 워치리스트** | 주요 마켓 실시간 시세 및 등락률 |
-| **AI 신호 패널** | 최신 매수/매도 신호, TA/감성 점수, 신뢰도 필터 |
-| **포지션 현황** | 현재 보유 종목, 평균단가, **실시간 평가손익(%)** |
+| OFF → ON | 확인 다이얼로그 표시 → 승인 시 활성화 |
+| ON → OFF | 즉시 비활성화 |
 
-### 5-2. 자동매매 ON/OFF 토글
+- 상태는 Redis에 저장되어 **서버 재시작 후에도 유지**
+- OFF 상태에서도 **SL/TP 청산은 계속 동작** (손실 방지)
+- ON 상태이면 AI 신호 발생 즉시 자동 주문 실행
 
-헤더 우측의 **[자동매매 OFF/ON]** 버튼:
-- **OFF → ON**: 확인 다이얼로그 표시 후 활성화 → Redis에 상태 저장
-- **ON → OFF**: 즉시 비활성화 (진행 중인 SL/TP 청산은 계속 실행됨)
-- 서버 재시작 후에도 마지막 상태 유지
+> ⚠️ **실제 자산이 거래됩니다. 처음에는 소액으로 테스트하세요.**
 
-> ⚠️ **주의**: ON으로 설정하면 AI 신호에 따라 실제 자산이 거래됩니다.
+---
 
-### 5-3. AI 신호 패널 읽는 법
+### 5-4. AI 신호 패널
+
+**신호 표시 시작 시간**: 최초 기동 후 캔들 50개 이상 수집 시 (~50분)
+
+#### 신뢰도 필터 슬라이더
+
+패널 상단의 슬라이더로 임계값 설정 (기본 50%):
+- 슬라이더를 올리면 → 확신도 높은 신호만 표시
+- 슬라이더를 낮추면 → 더 많은 신호 표시
+
+#### 신호 항목 읽는 법
 
 | 필드 | 의미 |
 |------|------|
-| `BUY` (초록) | 매수 신호 |
-| `SELL` (빨강) | 매도 신호 |
-| `HOLD` (회색) | 관망 |
-| **AI 점수** | final_score (-1.0 ~ +1.0) |
-| **TA** | 기술적 지표 점수 (60% 비중) |
-| **감성** | Groq AI 감성 점수 (40% 비중) |
-| **신뢰도** | 신호 확신도 (%) |
+| `BUY` (초록) | 매수 신호 (final_score > +0.25) |
+| `SELL` (빨강) | 매도 신호 (final_score < −0.25) |
+| `HOLD` (회색) | 관망 (−0.25 ≤ score ≤ +0.25) |
+| **AI 점수** | final_score (−1.0 ~ +1.0) |
+| **TA** | 기술적 지표 점수 (RSI/MACD/BB/EMA, 60% 비중) |
+| **감성** | Groq AI 감성 분석 점수 (40% 비중) |
+| **신뢰도** | 신호 확신도 (confidence %) |
+| `ta_only` | Groq 미사용, TA만으로 신호 생성됨 |
 
-**신뢰도 필터 슬라이더**: 패널 상단의 슬라이더로 신뢰도 임계값 조정 (기본 50%)
+---
 
-> AI 신호는 서비스 최초 기동 후 **약 50분** 뒤부터 표시됩니다.
-> `ta_only=False` 로그 → Groq API 정상 동작 중
+### 5-5. 마켓 워치리스트
 
-### 5-4. 포지션 현황 패널
+- 좌측 패널에 주요 8개 마켓 실시간 시세
+- 마켓 클릭 시 상단 캔들 차트 전환
+- 가격 색상: 초록(상승) / 빨강(하락) / 회색(보합)
 
-- 보유 종목별 수량, 평균단가, 현재가 표시
-- **실시간 평가손익**: WebSocket 시세에서 자동 계산 (API 호출 없음)
+---
+
+### 5-6. 포지션 현황 패널
+
+- 현재 보유 종목, 수량, 평균단가 표시
+- **실시간 평가손익**: WebSocket 시세 기반 자동 계산 (API 호출 없음)
 - SL(손절가) / TP(익절가) 표시
-- 상단 총 미실현 손익 요약
+- 상단: 전체 미실현 손익 합계
 
-### 5-5. 주문 내역 (`/orders`)
+---
+
+### 5-7. 주문 내역 페이지 (`/orders`)
 
 ```
-[전체/done/wait/cancel] [전체/매수/매도] 필터
-┌──────────────────────────────────────────────────┐
-│ 시간     마켓      방향  상태  유형  가격     수량 │
-│ 03/24   KRW-BTC   매수  done  limit  92,000,000  0.0001 │
-└──────────────────────────────────────────────────┘
+[상태 필터: 전체 / done / wait / cancel]  [방향: 전체 / 매수 / 매도]
+┌────────────────────────────────────────────────────────────────┐
+│ 시간           마켓       방향  상태  유형   가격         수량  │
+│ 03/24 09:14   KRW-BTC   매수  done  limit  105,712,000  0.001 │
+│ 03/24 08:30   KRW-ETH   매도  done  limit   3,200,000   0.05  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-### 5-6. 설정 페이지 (`/settings`)
+- 10초마다 자동 갱신
+- 상태: `done`(체결), `wait`(미체결), `cancel`(취소)
+
+---
+
+### 5-8. 설정 페이지 (`/settings`)
 
 | 항목 | 설명 |
 |------|------|
-| 업비트 API 키 | Access Key / Secret Key 입력 |
-| Groq API 키 | `gsk_...` 형태 키 입력 (console.groq.com) |
+| 업비트 Access Key | 업비트 API Access Key |
+| 업비트 Secret Key | 업비트 API Secret Key |
+| Groq API 키 | `gsk_...` 형태 (console.groq.com) |
 
-### 5-7. 토스트 알림
+**보기/숨기기 토글**: 키 값 마스킹 ON/OFF
 
-거래 이벤트 발생 시 화면 우하단에 5초 알림 표시:
+> ⚠️ 웹 UI 저장은 런타임 임시 저장입니다. `backend/.env` 파일 수정이 영구적입니다.
 
-| 알림 색상 | 이벤트 |
-|-----------|--------|
-| 초록 | 주문 체결, 익절(TP) 실행 |
-| 파랑 | 주문 접수 |
-| 노랑 | 손절(SL) 실행 |
-| 빨강 | 리스크 거절 |
+---
+
+### 5-9. 토스트 알림 (우하단)
+
+거래 이벤트 발생 시 5초간 표시:
+
+| 알림 색상 | 이벤트 | 내용 |
+|-----------|--------|------|
+| 🟢 초록 | 주문 체결 | `KRW-BTC BUY @105,712,000` |
+| 🟢 초록 | 익절(TP) 실행 | `KRW-ETH SELL — take profit` |
+| 🔵 파랑 | 주문 접수 | `KRW-SOL BUY @170,000` |
+| 🟡 노랑 | 손절(SL) 실행 | `KRW-XRP SELL — stop loss` |
+| 🔴 빨강 | 리스크 거절 | `KRW-DOGE — Daily loss limit reached` |
 
 ---
 
 ## 6. 자동매매 동작 방식
 
-> **경고**: 실제 자산이 거래됩니다. 반드시 소액으로 테스트 후 사용하세요.
+> ⚠️ **경고**: 실제 업비트 계좌에서 자산이 거래됩니다.
 
-### 전체 흐름
-
-```
-[Market Data Service]
-  └─ Upbit WebSocket에서 실시간 시세 수신 → DB(candles_1m) 저장
-
-[Strategy Service] — 60초마다
-  ├─ 24h 거래량 상위 20개 코인만 처리
-  ├─ 최근 200개 1분봉 조회
-  ├─ RSI / MACD / Bollinger Bands / EMA 계산 → TA Score
-  ├─ Groq AI 감성 분석 (30분 캐시, llama-3.1-8b-instant)
-  │   └─ 실패 시 TA-only 모드 폴백
-  ├─ 신호 융합: final_score = 0.6×TA + 0.4×감성
-  │   ├─ final_score > +0.25  → BUY 신호
-  │   ├─ final_score < −0.25  → SELL 신호
-  │   └─ 그 외                → HOLD (저장 생략)
-  └─ DB 저장 + Redis "upbit:signal" 브로드캐스트
-
-[Execution Service] — 5초마다 폴링
-  ├─ 자동매매 ON 여부 확인 (Redis "auto_trade:enabled")
-  │   └─ OFF 시 신호 처리 중단 (SL/TP 청산은 계속 동작)
-  ├─ 새 BUY/SELL 신호 감지 → 현재가 조회
-  ├─ [Risk Guard 검증]
-  │   ├─ 시장 경보 코인 → 거부
-  │   ├─ 일일 손실 한도 초과(기본 3%) → 거부
-  │   ├─ 연속 손실 5회 이상 → 거부
-  │   ├─ 동시 보유 5종목 초과 → 거부
-  │   └─ 단건 거래 한도 초과 → 수량 자동 축소 후 승인
-  ├─ 통과 → Upbit 시장가 주문 실행
-  └─ Redis "upbit:trade_event" 브로드캐스트 → 프론트 토스트 알림
-
-[SL/TP Monitor] — 10초마다 (자동매매 OFF 상태에서도 동작)
-  ├─ 모든 오픈 포지션 현재가 조회
-  ├─ 미실현 손익 갱신 → Redis "upbit:position_update" 브로드캐스트
-  ├─ 현재가 ≤ SL(손절가) → 시장가 매도 실행
-  └─ 현재가 ≥ TP(익절가) → 시장가 매도 실행
-
-[Order Sync] — 10초마다
-  └─ 미체결 주문 상태 동기화 → 포지션 업데이트
-```
-
-### 자동매매 전제 조건
+### 자동매매 전제 조건 체크리스트
 
 - [ ] `backend/.env`에 업비트 API 키 설정 (주문하기 권한)
 - [ ] 업비트에 현재 서버 IP 허용 등록
-- [ ] `backend/.env`에 Groq API 키 설정 (없으면 TA-only 모드로 동작)
-- [ ] 대시보드에서 **자동매매 ON** 활성화
-- [ ] AI 신호가 대시보드에 표시되고 있는지 확인 (기동 후 약 50분)
+- [ ] `backend/.env`에 Groq API 키 설정 (없으면 TA-only 모드)
+- [ ] 업비트 계좌에 KRW 잔고 존재
+- [ ] 대시보드 헤더에서 **자동매매 ON** 활성화
+- [ ] AI 신호 패널에 신호가 표시되고 있는지 확인
 
-### SL/TP 기본값
+---
 
-| 항목 | 기본값 | 설명 |
-|------|--------|------|
-| 손절(SL) | 진입가 × 0.97 | 3% 하락 시 자동 청산 |
-| 익절(TP) | 진입가 × 1.06 | 6% 상승 시 자동 청산 |
+### 전체 데이터 흐름
 
-> SL/TP는 자동매매 OFF 상태에서도 항상 동작합니다 (손실 방지 목적).
+```
+─── 데이터 수집 ──────────────────────────────────────────────────
+[Market Data Service]
+  ├─ Upbit WebSocket 전체 KRW 마켓 실시간 시세 구독
+  ├─ 1분봉 누적 → 60초마다 DB(candles_1m) 배치 저장
+  └─ 실시간 ticker → Redis "upbit:ticker" 발행
+         ↓
+  [Gateway market_ws] → /ws/market → 프론트 마켓 워치리스트
+
+─── AI 분석 (60초마다) ────────────────────────────────────────────
+[Strategy Service]
+  ├─ 24h 거래량 상위 10개 코인 선별
+  ├─ 최근 200개 1분봉 조회
+  ├─ 기술 지표 계산
+  │     RSI(14) / MACD(12-26-9) / Bollinger Bands(20,2σ) / EMA(20,50)
+  │     → TA Score (-1.0 ~ +1.0)
+  ├─ Groq AI 감성 분석 (llama-3.1-8b-instant, 30분 캐시)
+  │     입력: 종목명, 현재가, 24h 변동률, 거래량, TA 지표
+  │     출력: sentiment_score + confidence
+  │     실패 시: TA-only 모드 자동 폴백
+  ├─ 신호 융합: final_score = 0.6 × TA + 0.4 × sentiment
+  │     ├─ +0.25 초과 → BUY 신호
+  │     ├─ −0.25 미만 → SELL 신호
+  │     └─ 그 외     → HOLD (저장 생략)
+  └─ DB 저장 + Redis "upbit:signal" 발행
+         ↓
+  [Gateway signal_ws] → /ws/signals → 프론트 AI 신호 패널
+
+─── 주문 실행 (5초마다 폴링) ────────────────────────────────────
+[Execution Service]
+  ├─ Redis "auto_trade:enabled" 확인
+  │     OFF → 신호 처리 생략 (SL/TP는 계속 동작)
+  ├─ 새 BUY/SELL 신호 조회
+  ├─ Upbit REST API로 현재가(ticker) 조회
+  ├─ [Risk Guard 검증]
+  │     ├─ 시장 경보 코인(CAUTION/WARNING) → REJECT
+  │     ├─ 일일 손실 ≥ 3% → REJECT
+  │     ├─ 연속 손실 5회 이상 → REJECT
+  │     ├─ 동시 보유 5종목 초과 → REJECT
+  │     ├─ 단건 금액 > 총자산 1% → 수량 축소 후 APPROVE
+  │     └─ 포지션 비중 > 10% → 수량 축소 후 APPROVE
+  ├─ APPROVE → Upbit 시장가 주문 실행
+  └─ Redis "upbit:trade_event" 발행 → 프론트 토스트 알림
+
+─── SL/TP 모니터 (10초마다, 자동매매 OFF도 항상 실행) ────────────
+[Execution SL/TP Monitor]
+  ├─ 모든 오픈 포지션 현재가 조회
+  ├─ Redis "upbit:position_update" 발행 → 프론트 실시간 P&L 갱신
+  ├─ 현재가 ≤ SL → 시장가 매도 + trade_event 발행
+  └─ 현재가 ≥ TP → 시장가 매도 + trade_event 발행
+```
+
+---
+
+### SL(손절) / TP(익절) 기본값
+
+| 항목 | 공식 | 예시 (BTC 매수가 100,000,000원) |
+|------|------|---------------------------------|
+| 손절(SL) | 진입가 × 0.97 | 97,000,000원 (-3%) |
+| 익절(TP) | 진입가 × 1.06 | 106,000,000원 (+6%) |
+
+> SL/TP는 DB의 포지션 테이블에 저장되며, **자동매매 OFF 상태에서도 항상 감시**합니다.
 
 ---
 
 ## 7. 위험관리 설정
 
-`backend/.env`에서 조정:
+### 기본 Risk 파라미터 (`backend/.env`)
 
 ```dotenv
-RISK_MAX_DAILY_LOSS_PCT=0.03    # 일일 최대 손실 3% (초과 시 당일 매수 거부)
-RISK_MAX_POSITION_PCT=0.10      # 종목당 최대 비중 10%
-RISK_MAX_SINGLE_TRADE_PCT=0.01  # 단건 최대 거래 1%
+RISK_MAX_DAILY_LOSS_PCT=0.03     # 일일 최대 손실률 3%
+RISK_MAX_POSITION_PCT=0.10       # 종목당 최대 비중 10%
+RISK_MAX_SINGLE_TRADE_PCT=0.01   # 단건 최대 거래 비율 1%
 ```
 
-### Risk Guard 동작 규칙
-
-| 조건 | 동작 |
-|------|------|
-| 시장 경보(CAUTION/WARNING) 코인 | 거래 거부 |
-| 일일 손익이 −3% 이하 | 당일 전체 매수 거부 |
-| 연속 손실 5회 | 거래 거부 |
-| 동시 보유 5종목 초과 | 신규 매수 거부 |
-| 단건 거래금액 > 총자산 1% | 수량 자동 축소 후 실행 |
-| 포지션 비중 > 10% | 수량 자동 축소 후 실행 |
-
 변경 후 적용:
-
 ```bash
 docker compose restart execution
+```
+
+### Risk Guard 판정 로직
+
+| 조건 | 결과 | 비고 |
+|------|------|------|
+| 시장 경보(CAUTION/WARNING) 코인 | 거래 거부 | 업비트 공식 경보 기준 |
+| 일일 KST 기준 실현손익 ≤ −3% | 매수 거부 | 다음날 자동 해제 |
+| 연속 매도 손실 5회 이상 | 매수 거부 | 최근 20건 체결 기준 |
+| 동시 보유 5종목 초과 | 신규 매수 거부 | |
+| 단건 금액 > 총자산 × 1% | 수량 축소 후 실행 | 거부 아님, 조정 후 실행 |
+| 포지션 비중 > 10% | 수량 축소 후 실행 | 거부 아님, 조정 후 실행 |
+| 현재가 조회 실패 | 신호 rejected 처리 | 무한 재시도 방지 |
+
+### 현재 Risk 상태 확인
+
+```bash
+# 오늘 신호 처리 현황
+docker compose exec postgres psql -U trader -d upbit_trader \
+  -c "SELECT side, status, rejection_reason, COUNT(*)
+      FROM signals
+      WHERE ts > NOW() - INTERVAL '24 hours'
+      GROUP BY side, status, rejection_reason
+      ORDER BY COUNT(*) DESC;"
 ```
 
 ---
 
 ## 8. 백테스트 실행
 
-`/backtest` 페이지에서 과거 데이터로 전략을 검증합니다.
+`/backtest` 페이지에서 수집된 과거 캔들 데이터로 전략을 검증합니다.
 
 | 입력 항목 | 설명 | 예시 |
 |-----------|------|------|
-| 마켓 | 백테스트 종목 | KRW-BTC |
-| 시작일 | 백테스트 기간 시작 | 2026-01-01 |
-| 종료일 | 백테스트 기간 종료 | 2026-03-01 |
-| 초기 자본 | 시뮬레이션 시작 금액 (KRW) | 1,000,000 |
+| 마켓 | 백테스트 대상 종목 | `KRW-BTC` |
+| 시작일 | 기간 시작 | `2026-01-01` |
+| 종료일 | 기간 종료 | `2026-03-01` |
+| 초기 자본 | 시작 금액 (KRW) | `1,000,000` |
 
-> ⚠️ 백테스트 서비스는 현재 stub 상태입니다. 수집된 캔들 데이터 기반으로 향후 구현 예정.
+> ⚠️ 백테스트 서비스는 현재 **stub 상태**입니다. 수집된 캔들 데이터 기반으로 향후 구현 예정.
 
 ---
 
 ## 9. 트러블슈팅
 
-### Docker Desktop이 실행 중이지 않을 때
+### 🔴 시세 데이터가 표시되지 않을 때
 
+**증상**: 마켓 워치리스트에 `--` 표시, 데이터 업데이트 없음
+
+**원인 1**: `market_data` 서비스의 Redis 연결이 오래되어 stale 상태
+```bash
+docker compose restart market_data
 ```
-Cannot connect to the Docker daemon
+
+**원인 2**: `gateway` 서비스 크래시 (환경변수 오류 등)
+```bash
+docker compose logs gateway --tail=20
+docker compose restart gateway
 ```
-→ Docker Desktop 앱을 먼저 실행하세요.
+
+**원인 3**: 브라우저 캐시
+→ 브라우저에서 **강력 새로고침** (`Ctrl+Shift+R` / `Cmd+Shift+R`)
+
+**원인 4**: gateway의 Redis 구독이 누적되어 이전 구독이 비어있는 상태
+```bash
+docker compose restart gateway
+```
 
 ---
 
-### AI 신호가 표시되지 않을 때
+### 🟡 AI 신호가 표시되지 않을 때
 
-1. 서비스 최초 기동 후 **최소 50분** 경과 필요
-2. 현재 캔들 수 확인:
-
+**원인 1**: 최초 기동 후 캔들 데이터 부족 (최소 50개 필요)
 ```bash
+# 캔들 수 확인
 docker compose exec postgres psql -U trader -d upbit_trader \
   -c "SELECT MIN(cnt), MAX(cnt), AVG(cnt)::int
       FROM (SELECT coin_id, COUNT(*) as cnt FROM candles_1m GROUP BY coin_id) t;"
 ```
+→ MAX가 50 이상이면 곧 신호 생성 시작 (약 50분 대기)
 
-MAX가 50 이상이면 곧 신호 생성 시작.
-
-3. strategy 로그 확인:
-
+**원인 2**: Groq API 키 미설정 → TA-only 모드로 동작
 ```bash
-docker compose logs strategy --tail=30 | grep -E "Signal|ERROR|Groq"
+docker compose logs strategy --tail=20 | grep -E "Signal|ta_only|Groq"
 ```
+→ `ta_only=True` 이면 정상 (Groq 없이 TA만으로 신호 생성)
+→ `ta_only=False` 이면 Groq 포함 정상 신호
 
-`ta_only=True` 이면 Groq 키 미설정 — `.env`에 `GROQ_API_KEY` 확인.
+**원인 3**: Groq API 429 오류 (TPM 한도 초과)
+```bash
+docker compose logs strategy | grep "429"
+```
+→ 자동 폴백으로 계속 신호 생성, 다음 주기에 재시도
 
 ---
 
-### 주문이 실행되지 않을 때
+### 🔴 주문이 실행되지 않을 때
 
-1. 대시보드 헤더에서 **자동매매 ON** 상태 확인
-2. 업비트 API 키 및 IP 허용 확인
-3. execution 로그 확인:
+**체크 순서:**
 
-```bash
-docker compose logs execution --tail=30 | grep -E "Order|rejected|ERROR"
-```
+1. **자동매매 토글 확인**: 대시보드 헤더에서 **자동매매 ON** 상태 확인
 
-4. 신호 상태 확인:
-
+2. **신호 상태 확인**:
 ```bash
 docker compose exec postgres psql -U trader -d upbit_trader \
-  -c "SELECT side, status, rejection_reason FROM signals ORDER BY ts DESC LIMIT 10;"
+  -c "SELECT side, status, rejection_reason, ts
+      FROM signals ORDER BY ts DESC LIMIT 10;"
 ```
 
 | status | 의미 |
 |--------|------|
-| `new` | 처리 대기 중 (자동매매 OFF 상태이면 계속 new) |
+| `new` | 처리 대기 중 (자동매매 OFF면 계속 new) |
 | `executed` | 주문 전송 완료 |
-| `rejected` | Risk Guard 또는 오류로 거부 |
+| `rejected` | Risk Guard 또는 오류로 거부됨 |
+
+3. **execution 로그 확인**:
+```bash
+docker compose logs execution --tail=30 | grep -E "Order|rejected|ERROR|auto_trade"
+```
+
+4. **업비트 API 키 및 IP 허용 확인**:
+```bash
+docker compose logs execution | grep "401\|Unauthorized"
+```
 
 ---
 
-### Risk Guard가 모든 주문을 거부할 때
+### 🔴 Risk Guard가 모든 주문을 거부할 때
 
 ```bash
 docker compose logs execution | grep "Signal rejected"
 ```
 
-| rejection_reason | 원인 및 해결 |
-|-----------------|-------------|
-| `Daily loss limit reached` | 당일 손실 3% 초과 — 내일 자동 해제 또는 `RISK_MAX_DAILY_LOSS_PCT` 조정 |
-| `Max open positions reached` | 5종목 동시 보유 — 일부 매도 후 재시도 |
-| `Market warning active` | 업비트 경보 종목 — 다른 마켓에서 시도 |
-| `Insufficient qty` | 잔고 부족 |
-| `Ticker fetch error` | Upbit API 일시 오류 — 잠시 후 자동 재시도 |
+| rejection_reason | 원인 | 해결 |
+|-----------------|------|------|
+| `Daily loss limit reached` | 당일 손실 3% 초과 | 내일 자동 해제 / `RISK_MAX_DAILY_LOSS_PCT` 조정 |
+| `Max open positions reached` | 5종목 동시 보유 | 일부 매도 후 재시도 |
+| `Market warning active` | 업비트 경보 종목 | 경보 해제 대기 |
+| `Insufficient qty` | 잔고 부족 | 업비트 KRW 잔고 확인 |
+| `Ticker fetch error` | Upbit API 오류 | 잠시 후 자동 재시도 |
+| `Consecutive losses` | 연속 5회 손실 | 수동으로 `RISK_MAX_CONSECUTIVE_LOSSES` 조정 |
 
 ---
 
-### Groq API 오류
+### 🟡 Groq API 오류
 
 ```bash
 docker compose logs strategy | grep "Groq"
 ```
 
-- `401`: API 키 오류 → `.env`의 `GROQ_API_KEY` 확인
-- `429`: 일일 한도 소진 (14,400건) → 다음날 자동 초기화
-- 오류 시 TA-only 모드로 자동 폴백 → 정상 신호 생성 유지
+| 에러 | 원인 | 해결 |
+|------|------|------|
+| `401` | API 키 오류 | `.env`의 `GROQ_API_KEY` 확인 |
+| `429 TPM` | 분당 토큰 초과 | 자동 폴백, 다음 주기 자동 재시도 |
+| `429 RPD` | 일일 요청 초과(14,400건) | 다음날 자동 초기화 |
+
+> Groq 오류 시 **TA-only 모드로 자동 폴백** → 정상 신호 생성 계속 유지
 
 ---
 
-### 업비트 API 오류
+### 🔴 업비트 API 오류
 
-| 에러 코드 | 원인 | 해결 |
-|-----------|------|------|
+| 에러 | 원인 | 해결 |
+|------|------|------|
 | `401 Unauthorized` | API 키 오류 또는 IP 미허용 | 키 확인, 업비트 IP 화이트리스트 등록 |
 | `429 Too Many Requests` | 요청 빈도 초과 | 자동 대기 후 재시도 |
+| `400 Bad Request` | 최소 주문 금액 미달 | 잔고 확인 (최소 5,000 KRW) |
 | WS 연결 끊김 | 네트워크 불안정 | 자동 재연결 (별도 조치 불필요) |
 
 ---
 
-### 설정 저장 500 에러
+### 🟡 설정 저장 500 에러
 
 게이트웨이 로그에서 `ENCRYPTION_KEY` 오류 확인:
-
 ```bash
 docker compose logs gateway --tail=10
 ```
 
-유효한 키 재생성:
-
+유효한 Fernet 키 재생성:
 ```bash
 docker compose exec gateway python3 -c \
   "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-출력된 키를 `backend/.env`의 `ENCRYPTION_KEY=`에 입력 후 재시작.
-
----
-
-### 포트 충돌
-
+출력된 키를 `backend/.env`의 `ENCRYPTION_KEY=`에 입력 후:
 ```bash
-lsof -i :3000    # 프론트엔드
-lsof -i :8000    # 게이트웨이
+docker compose restart gateway
 ```
 
 ---
 
-### 전체 초기화 (데이터 삭제 포함)
+### 🟡 Gateway 시작 실패 (`ValidationError: Extra inputs are not permitted`)
+
+**원인**: `.env`에 이전 버전의 환경변수(`GEMINI_API_KEY`, `OLLAMA_BASE_URL` 등)가 남아있어 pydantic 검증 실패
+
+**확인**:
+```bash
+docker compose logs gateway | grep "ValidationError\|extra_forbidden"
+```
+
+**해결**: `backend/.env`에서 해당 변수 삭제 후 재시작:
+```bash
+docker compose restart gateway
+```
+
+현재 `.env`에서 허용되는 변수 목록:
+`APP_ENV`, `APP_NAME`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `JWT_*`, `UPBIT_*`, `GROQ_*`, `RISK_*`, `WS_*`, `BACKTEST_*`, `ENCRYPTION_KEY`
+
+---
+
+### 🟡 포트 충돌
 
 ```bash
-docker compose down -v --rmi local
-docker compose up -d --build
+lsof -i :3000    # 프론트엔드 포트 확인
+lsof -i :8000    # 게이트웨이 포트 확인
+lsof -i :5432    # PostgreSQL 포트 확인
+lsof -i :6379    # Redis 포트 확인
+```
+
+---
+
+### 🔴 전체 초기화 (데이터 삭제 포함)
+
+```bash
+docker compose down -v --rmi local   # 컨테이너 + 이미지 + 볼륨 전체 삭제
+docker compose up -d --build         # 재빌드 및 시작
+```
+
+---
+
+### 서비스 상태 전체 진단
+
+```bash
+# 서비스 상태 한눈에 보기
+docker compose ps
+
+# Redis 채널 구독 현황 확인
+docker exec upbit-ai-trader-redis-1 redis-cli PUBSUB NUMSUB \
+  upbit:ticker upbit:signal upbit:trade_event upbit:position_update
+
+# 최근 1시간 신호 통계
+docker compose exec postgres psql -U trader -d upbit_trader \
+  -c "SELECT side, status, COUNT(*) FROM signals
+      WHERE ts > NOW() - INTERVAL '1 hour'
+      GROUP BY side, status;"
 ```
 
 ---
 
 ## 10. API 레퍼런스
 
-전체 엔드포인트: http://localhost:8000/docs (Swagger UI)
+전체 엔드포인트: **http://localhost:8000/docs** (Swagger UI)
 
 ### REST API
 
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| GET | `/health` | 서버 상태 |
-| GET | `/api/v1/markets` | KRW 전체 마켓 목록 |
-| GET | `/api/v1/markets/{market}/candles` | 캔들 데이터 (`?interval=1m&limit=200`) |
-| GET | `/api/v1/signals` | AI 신호 목록 (`?market=KRW-BTC&limit=20`) |
-| GET | `/api/v1/orders` | 주문 내역 (`?state=done`) |
-| GET | `/api/v1/positions` | 포지션 현황 |
-| GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 |
-| POST | `/api/v1/backtests/runs` | 백테스트 실행 |
-| POST | `/api/v1/secrets/upbit-keys` | 업비트 키 임시 저장 |
-| POST | `/api/v1/secrets/groq-key` | Groq 키 임시 저장 |
-| GET | `/api/v1/settings/auto-trade` | 자동매매 상태 조회 |
-| PATCH | `/api/v1/settings/auto-trade` | 자동매매 ON/OFF 설정 |
+| 메서드 | 경로 | 설명 | 주요 파라미터 |
+|--------|------|------|---------------|
+| GET | `/health` | 서버 상태 확인 | — |
+| GET | `/api/v1/markets` | KRW 전체 마켓 목록 | — |
+| GET | `/api/v1/markets/{market}/candles` | 캔들 데이터 | `interval=1m`, `limit=200` |
+| GET | `/api/v1/signals` | AI 신호 목록 | `market=KRW-BTC`, `side=buy`, `limit=20` |
+| GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel` |
+| GET | `/api/v1/positions` | 포지션 현황 | — |
+| GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | — |
+| POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
+| POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |
+| POST | `/api/v1/secrets/groq-key` | Groq 키 저장 | `api_key` |
+| GET | `/api/v1/settings/auto-trade` | 자동매매 상태 | — |
+| PATCH | `/api/v1/settings/auto-trade` | 자동매매 ON/OFF | `enabled: bool` |
 
 ### WebSocket
 
-| 경로 | 설명 | 파라미터 |
-|------|------|----------|
-| `ws://localhost:8000/ws/market` | 실시간 시세 | `?codes=KRW-BTC,KRW-ETH` |
-| `ws://localhost:8000/ws/signals` | 실시간 AI 신호 | — |
-| `ws://localhost:8000/ws/orders` | 실시간 주문 업데이트 | — |
-| `ws://localhost:8000/ws/trade-events` | 거래 이벤트 (주문/체결/SL/TP/거절) | — |
-| `ws://localhost:8000/ws/portfolio` | 포지션 실시간 업데이트 | — |
+```
+ws://localhost:8000/ws/market?codes=KRW-BTC,KRW-ETH
+```
+
+| 경로 | 설명 | 데이터 형식 |
+|------|------|-------------|
+| `/ws/market?codes=KRW-BTC,...` | 실시간 시세 (Upbit SIMPLE 형식) | `{cd, tp, c, cr, cp, atv24h, ...}` |
+| `/ws/signals` | 실시간 AI 신호 | `{market, side, final_score, confidence, ...}` |
+| `/ws/orders` | 실시간 주문 업데이트 | `{id, market, side, status, ...}` |
+| `/ws/trade-events` | 거래 이벤트 (체결/SL/TP/거절) | `{type, market, side, price, reason}` |
+| `/ws/portfolio` | 포지션 실시간 업데이트 | `{market, qty, avg_entry_price, ...}` |
+
+### WebSocket 이벤트 타입 (`/ws/trade-events`)
+
+| type | 설명 |
+|------|------|
+| `order_placed` | 주문 접수 |
+| `order_filled` | 주문 체결 |
+| `sl_triggered` | 손절 실행 |
+| `tp_triggered` | 익절 실행 |
+| `risk_rejected` | Risk Guard 거부 |
+
+---
+
+## 11. 아키텍처 개요
+
+### 서비스 구성 (9개 Docker 컨테이너)
+
+```
+┌─────────────────── Docker Compose Network ─────────────────────┐
+│                                                                 │
+│  [frontend :3000]  ←── HTTP/WS ──→  [gateway :8000]           │
+│      Next.js 16                        FastAPI + Uvicorn        │
+│      (standalone build)                REST API + WebSocket     │
+│                                              │                  │
+│  [postgres :5432]  ←────────────────────────┤                  │
+│      PostgreSQL 16                           │                  │
+│                                              │                  │
+│  [redis :6379]  ←── pub/sub ────────────────┤                  │
+│      Redis 7           ↑    ↑    ↑           │                  │
+│                        │    │    │            │                  │
+│  [market_data]  ───────┘    │    │            │                  │
+│      Upbit WS 수집           │    │            │                  │
+│                             │    │            │                  │
+│  [strategy]  ───────────────┘    │            │                  │
+│      AI 신호 생성                  │            │                  │
+│                                  │            │                  │
+│  [execution]  ────────────────────┘           │                  │
+│      주문 실행 + SL/TP                         │                  │
+│                                              │                  │
+│  [risk]  (stub)                              │                  │
+│  [backtest]  (stub)                          │                  │
+└──────────────────────────────────────────────────────────────── ┘
+```
+
+### Redis Pub/Sub 채널
+
+| 채널 | 발행자 | 구독자 | 내용 |
+|------|--------|--------|------|
+| `upbit:ticker` | market_data | gateway (market_ws) | 실시간 시세 |
+| `upbit:signal` | strategy | gateway (signal_ws) | AI 매매 신호 |
+| `upbit:trade_event` | execution | gateway (trade_event_ws) | 주문/체결/SL/TP |
+| `upbit:position_update` | execution | gateway (trade_event_ws) | 포지션 업데이트 |
+
+### 데이터베이스 테이블
+
+| 테이블 | 내용 |
+|--------|------|
+| `coins` | KRW 마켓 목록 |
+| `candles_1m` | 1분봉 OHLCV |
+| `indicator_snapshots` | RSI/MACD/BB/EMA 스냅샷 |
+| `sentiment_snapshots` | Groq AI 감성 분석 결과 |
+| `signals` | AI 매매 신호 |
+| `orders` | 주문 |
+| `fills` | 체결 내역 |
+| `positions` | 현재 포지션 |
+| `backtest_runs` | 백테스트 실행 기록 |
+| `backtest_trades` | 백테스트 거래 내역 |
+| `backtest_metrics` | 백테스트 성과 지표 |

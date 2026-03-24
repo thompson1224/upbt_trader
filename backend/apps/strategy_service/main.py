@@ -27,7 +27,7 @@ STRATEGY_ID = "hybrid_v1"
 TIMEFRAME = "1m"
 CANDLE_WINDOW = 200          # 지표 계산에 필요한 캔들 수
 SENTIMENT_INTERVAL_SEC = 1800  # 30분마다 감성 분석 캐시
-TOP_MARKETS_BY_VOLUME = 20   # 24h 거래량 상위 N개 코인만 처리
+TOP_MARKETS_BY_VOLUME = 10   # 24h 거래량 상위 N개 코인만 처리 (Groq TPM 6000 한도 고려)
 
 
 class StrategyRunner:
@@ -74,8 +74,8 @@ class StrategyRunner:
 
         logger.info("Processing top %d markets by 24h volume", len(coins))
 
-        # 코인별 병렬 처리 (최대 10개씩 배치)
-        batch_size = 10
+        # 코인별 순차 처리 (Groq TPM 6000 한도: 마켓당 ~300 tokens × 10 = 3000/min)
+        batch_size = 5
         for i in range(0, len(coins), batch_size):
             batch = coins[i : i + batch_size]
             results = await asyncio.gather(
@@ -85,6 +85,8 @@ class StrategyRunner:
             for coin, result in zip(batch, results):
                 if isinstance(result, Exception):
                     logger.error("Coin processing error [%s]: %s", coin.market, result)
+            if i + batch_size < len(coins):
+                await asyncio.sleep(10)  # 배치 간 10초 딜레이 (TPM 분산)
 
     async def _process_coin(self, coin: Coin):
         async with self.session_factory() as db:

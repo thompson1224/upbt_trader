@@ -184,6 +184,32 @@ Candle 200개 조회
 
 ---
 
+## v0.2.1 — 안정성 버그 수정 (2026-03-24)
+
+### 수정된 버그
+
+#### 1. market_data_service Redis stale 연결 (`market_data_service/main.py`)
+- **증상**: 서비스 장기 가동(3일+) 후 실시간 시세가 프론트엔드에 미전달
+- **원인**: TCP 타임아웃 후 stale된 `aioredis` 클라이언트가 `publish()` 예외를 조용히 삼킴
+- **수정**: `_get_redis()` 함수 추가 — `ping()` 헬스체크 후 stale 연결 자동 재생성
+
+#### 2. Gateway WebSocket 좀비 구독 누적 (`gateway/ws/*.py`)
+- **증상**: uvicorn `--reload` 트리거마다 Redis 구독자가 누적(1 → N개), 동일 데이터 N회 브로드캐스트
+- **원인**: `asyncio.CancelledError`는 `BaseException`이므로 `except Exception`에서 잡히지 않아 Redis 연결이 닫히지 않음
+- **수정**: 4개 구독 함수 모두에 `except asyncio.CancelledError: raise` + `finally: await r.aclose()` 추가
+  - `gateway/ws/market_ws.py` — `start_redis_subscriber()`
+  - `gateway/ws/signal_ws.py` — `start_redis_subscriber()`
+  - `gateway/ws/trade_event_ws.py` — `start_trade_event_subscriber()`, `start_portfolio_subscriber()`
+
+#### 3. Groq TPM 초과 방지 (`strategy_service/main.py`)
+- **증상**: Groq API 429 오류 (`Limit 6000, Used 5997`)
+- **원인**: 20개 마켓 × ~300 tokens = ~6,000 tokens/분, Groq 무료 플랜 TPM 한도 초과
+- **수정**:
+  - `TOP_MARKETS_BY_VOLUME`: 20 → **10** (분당 ~3,000 tokens)
+  - `batch_size`: 10 → **5**, 배치 간 10초 딜레이 추가
+
+---
+
 ## 현재 상태 (2026-03-24 기준)
 
 | 항목 | 상태 |
