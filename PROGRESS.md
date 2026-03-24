@@ -1,6 +1,6 @@
 # Upbit AI Trader — 작업 진행 현황
 
-> 최종 업데이트: 2026-03-21
+> 최종 업데이트: 2026-03-24
 
 ---
 
@@ -12,6 +12,7 @@
       ▼                           ▼
 [Gateway :8000]  ←── Redis pub/sub ←── [market_data_service]
       │                                 [strategy_service]
+      │                                 [execution_service]
       ▼
 [PostgreSQL :5432]   [Redis :6379]
 ```
@@ -24,15 +25,15 @@
 | `redis` | 6379 | 캐시 / pub-sub 브릿지 |
 | `gateway` | 8000 | FastAPI REST + WebSocket |
 | `market_data` | — | Upbit WS → DB + Redis 발행 |
-| `strategy` | — | 60초 주기 신호 생성 → Redis 발행 |
-| `execution` | — | 신호 폴링 → Risk Guard → Upbit 주문 |
+| `strategy` | — | 60초 주기 신호 생성 (Groq AI) → Redis 발행 |
+| `execution` | — | 신호 폴링 → Risk Guard → Upbit 주문 → Redis 발행 |
 | `risk` | — | 위험관리 서비스 (stub, 로직은 execution에 통합) |
 | `backtest` | — | 백테스팅 엔진 (stub) |
-| `frontend` | 3000 | Next.js 16 앱 |
+| `frontend` | 3000 | Next.js 앱 |
 
 ---
 
-## v0.1.0 — 초기 릴리즈 (최초 커밋)
+## v0.1.0 — 초기 릴리즈
 
 ### 백엔드
 
@@ -43,34 +44,125 @@
 | `libs/db/models/coin.py` | `coins` | KRW 마켓 목록 |
 | `libs/db/models/candle.py` | `candles_1m` | 1분봉 OHLCV |
 | `libs/db/models/indicator.py` | `indicator_snapshots` | RSI/MACD/BB/EMA |
-| `libs/db/models/sentiment.py` | `sentiment_snapshots` | Claude 감성 분석 결과 |
+| `libs/db/models/sentiment.py` | `sentiment_snapshots` | AI 감성 분석 결과 |
 | `libs/db/models/signal.py` | `signals` | AI 매매 신호 |
 | `libs/db/models/order.py` | `orders`, `fills` | 주문 / 체결 |
 | `libs/db/models/position.py` | `positions` | 현재 포지션 |
 | `libs/db/models/backtest.py` | `backtest_runs`, `backtest_trades`, `backtest_metrics` | 백테스트 |
-
-#### 핵심 라이브러리
-
-| 파일 | 설명 |
-|------|------|
-| `libs/upbit/rest_client.py` | pyupbit 래퍼 (시세, 주문, 잔고, **현재가**) |
-| `libs/upbit/websocket_client.py` | Upbit WS 클라이언트 (자동 재연결) |
-| `libs/ai/claude_client.py` | Claude API 감성 분석 (10분 캐시) |
-| `libs/config/settings.py` | pydantic-settings 환경변수 관리 |
-| `libs/db/session.py` | AsyncSession factory |
 
 #### 신호 생성 파이프라인
 
 ```
 Candle 200개 조회
   → RSI(14) / MACD(12-26-9) / Bollinger Bands(20/2σ) / EMA(20,50) 계산
-  → Claude API 감성 점수 (10분 캐시)
+  → AI 감성 분석 (10분 캐시)
   → 신호 융합: final_score = 0.6×TA + 0.4×sentiment
   → side: buy(>0.2) / sell(<-0.2) / hold
   → DB 저장 + Redis "upbit:signal" 발행
 ```
 
-#### Gateway REST API
+---
+
+## v0.1.1 — Docker 환경 구성 및 버그 수정 (2026-03-21)
+
+- Next.js standalone 빌드 설정 추가
+- `app/page.tsx` vs `app/(dashboard)/page.tsx` URL 충돌 해결
+- Docker 서비스명으로 DB/Redis 호스트 수정
+- ENCRYPTION_KEY 유효한 Fernet 키로 교체
+- backtest/risk service stub 생성
+- Redis pub/sub 브릿지 구현 (`market_ws.py`, `signal_ws.py`)
+
+---
+
+## v0.1.2 — Risk Guard 연동 버그 수정 (2026-03-21)
+
+`execution_service`에 P0 버그 4개 수정:
+
+1. `market_warning` bool 타입 오류 → `_is_market_warning()` 함수로 교정
+2. `daily_pnl` 항상 0 → KST 오늘 0시 이후 매도 fill 기반 실시간 계산
+3. `consecutive_losses` 항상 0 → 최근 매도 체결 역순 손실 스트릭 계산
+4. `entry_price` 단위 오류 → `get_ticker()` 실시간 현재가 사용
+
+추가:
+- `libs/upbit/rest_client.py` — `get_ticker()` 추가
+- N+1 쿼리 → 단일 세션 JOIN 배치 조회
+- UTC → KST 기준 교정
+
+---
+
+## v0.2.0 — 자동매매 파이프라인 완성 + Groq AI 교체 (2026-03-24)
+
+### AI 엔진 교체: Claude/Ollama/Gemini → Groq
+
+| 항목 | 이전 | 현재 |
+|------|------|------|
+| AI 제공자 | Ollama (로컬) → Gemini (클라우드) | **Groq** (클라우드) |
+| 모델 | llama-3.2 / gemini-1.5-flash | **llama-3.1-8b-instant** |
+| 비용 | 로컬 GPU 또는 유료 | **무료 14,400 req/day** |
+| 지연시간 | 수 초 | ~0.3초 (Groq 특화 추론 칩) |
+| 설정 | `OLLAMA_BASE_URL` / `GEMINI_API_KEY` | **`GROQ_API_KEY`** |
+
+#### 변경 파일
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `backend/libs/ai/groq_client.py` | **신규** — httpx + Semaphore(5), JSON mode |
+| `backend/libs/ai/gemini_client.py` | **삭제** |
+| `backend/libs/ai/ollama_client.py` | **삭제** |
+| `backend/libs/config/settings.py` | `groq_api_key`, `groq_model` 추가 |
+| `backend/apps/strategy_service/main.py` | `GroqClient` 사용으로 교체 |
+| `backend/apps/gateway/api/v1/settings.py` | `POST /secrets/groq-key` 엔드포인트 |
+| `backend/.env` | `GROQ_API_KEY`, `GROQ_MODEL` 추가 |
+
+### 자동매매 파이프라인 완성
+
+#### 백엔드 신규/수정
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `backend/apps/gateway/ws/trade_event_ws.py` | **신규** — Redis `upbit:trade_event` → `/ws/trade-events` 브릿지 |
+| `backend/apps/gateway/ws/trade_event_ws.py` | Redis `upbit:position_update` → `/ws/portfolio` 브릿지 |
+| `backend/apps/gateway/main.py` | trade_event, portfolio 구독 태스크 등록 |
+| `backend/apps/gateway/api/v1/orders.py` | Coin JOIN으로 market명 반환, bid/ask → buy/sell 매핑 |
+
+#### 프론트엔드 신규/수정
+
+**스토어 (Zustand)**
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `frontend/src/store/useTradeStore.ts` | `setAutoTrading(enabled)` 추가 |
+| `frontend/src/store/useMarketStore.ts` | `minConfidence` 상태 + `setMinConfidence()` |
+| `frontend/src/store/useNotificationStore.ts` | **신규** — 토스트 알림 (최대 5개, 5초 자동 해제) |
+
+**훅**
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `frontend/src/hooks/useUpbitWS.ts` | `useTradeEventWS()` 훅 추가 — `/ws/trade-events` 구독 → 토스트 |
+
+**컴포넌트**
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `frontend/src/components/layout/AutoTradeToggle.tsx` | **신규** — 활성화 확인 다이얼로그, 낙관적 업데이트 |
+| `frontend/src/components/layout/GlobalHeader.tsx` | `<AutoTradeToggle />` 사용, 서버 상태 hydration |
+| `frontend/src/components/dashboard/PositionPanel.tsx` | WebSocket ticker에서 실시간 P&L 계산 (폴링 없음) |
+| `frontend/src/components/dashboard/ConfidenceFilter.tsx` | **신규** — 슬라이더 (0-100%, 5% 단위) |
+| `frontend/src/components/dashboard/AISignalPanel.tsx` | `<ConfidenceFilter />` 추가, minConfidence 필터링 |
+| `frontend/src/components/common/ToastContainer.tsx` | **신규** — 우하단 고정, 타입별 색상 |
+| `frontend/src/components/common/WSInitializer.tsx` | `useTradeEventWS()` 등록 |
+
+**페이지/레이아웃**
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `frontend/src/app/(dashboard)/layout.tsx` | `<ToastContainer />` 추가 |
+| `frontend/src/app/settings/page.tsx` | Groq API 키 입력 UI (orange Zap 아이콘) |
+| `frontend/src/app/orders/page.tsx` | **신규** — 주문 내역 (state/side 필터, 10초 갱신) |
+| `frontend/src/components/layout/Sidebar.tsx` | `/orders` 네비게이션 추가 |
+
+### Gateway REST/WebSocket API (누적)
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
@@ -81,162 +173,35 @@ Candle 200개 조회
 | GET | `/api/v1/positions` | 포지션 현황 |
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 |
-| POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 |
-| POST | `/api/v1/secrets/claude-key` | Claude 키 저장 |
-| WS | `/ws/market` | 실시간 시세 |
+| POST | `/api/v1/secrets/upbit-keys` | 업비트 API 키 저장 (암호화) |
+| POST | `/api/v1/secrets/groq-key` | Groq API 키 저장 |
+| PATCH | `/api/v1/settings/auto-trade` | 자동매매 ON/OFF |
+| GET | `/api/v1/settings/auto-trade` | 자동매매 상태 조회 |
+| WS | `/ws/market` | 실시간 시세 (ticker) |
 | WS | `/ws/signals` | 실시간 AI 신호 |
-| WS | `/ws/orders` | 실시간 주문 |
-
-### 프론트엔드
-
-| 경로 | 파일 | 설명 |
-|------|------|------|
-| `/` | `app/(dashboard)/page.tsx` | 메인 대시보드 |
-| `/market` | `app/market/page.tsx` | 전체 마켓 |
-| `/backtest` | `app/backtest/page.tsx` | 백테스트 |
-| `/settings` | `app/settings/page.tsx` | API 키 설정 |
+| WS | `/ws/trade-events` | 실시간 체결/SL/TP 알림 |
+| WS | `/ws/portfolio` | 실시간 포지션 업데이트 |
 
 ---
 
-## v0.1.1 — Docker 환경 구성 및 버그 수정 (2026-03-21)
-
-### 변경 내용
-
-#### 1. `docker-compose.yml` 활용
-
-기존 `docker-compose.yml` 기반으로 전체 서비스 컨테이너화 구동.
-
-#### 2. `frontend/next.config.ts` — standalone 빌드 설정 추가
-
-```ts
-// 변경 전
-const nextConfig: NextConfig = {};
-
-// 변경 후
-const nextConfig: NextConfig = { output: "standalone" };
-```
-
-- **원인**: Dockerfile이 `.next/standalone` 디렉토리를 COPY하는데 설정 누락으로 빌드 실패.
-
-#### 3. `frontend/src/app/page.tsx` 삭제
-
-- **원인**: Next.js App Router에서 `app/page.tsx`와 `app/(dashboard)/page.tsx`가 동일한 `/` URL로 충돌.
-
-#### 4. `backend/.env` — Docker 서비스명으로 호스트 수정
-
-```dotenv
-# 변경 전
-DATABASE_URL=postgresql+psycopg://trader:trader_secret@localhost:5432/upbit_trader
-REDIS_URL=redis://localhost:6379/0
-
-# 변경 후
-DATABASE_URL=postgresql+psycopg://trader:trader_secret@postgres:5432/upbit_trader
-REDIS_URL=redis://redis:6379/0
-```
-
-#### 5. `backend/.env` — ENCRYPTION_KEY 유효한 Fernet 키로 교체
-
-- **원인**: 플레이스홀더 값은 `ValueError` 발생 → 설정 저장 500 에러.
-
-#### 6. backtest/risk service stub 생성
-
-- **원인**: `docker-compose.yml`에 실행 명령이 있으나 파일 없음 → `Restarting` 루프.
-
-#### 7. Redis pub/sub 브릿지 구현
-
-```
-market_data_service  →  Redis "upbit:ticker"  →  gateway market_ws.py  →  /ws/market
-strategy_service     →  Redis "upbit:signal"  →  gateway signal_ws.py  →  /ws/signals
-```
-
----
-
-## v0.1.2 — Risk Guard 연동 버그 수정 (2026-03-21)
-
-### 배경
-
-`execution_service`에 `PreTradeRiskGuard` import 및 호출 코드는 이미 존재했으나,
-4개 P0 버그로 인해 위험관리 로직이 실제로 동작하지 않는 상태였음.
-
-### 수정 내용
-
-#### 1. `libs/upbit/rest_client.py` — `get_ticker()` 추가
-
-```python
-async def get_ticker(self, market: str) -> float | None:
-    """현재가 조회 (공개 API)."""
-```
-
-- 실시간 현재가를 Upbit REST API에서 직접 조회
-
-#### 2. `apps/market_data_service/main.py` — market_warning upsert 수정
-
-```python
-# 변경 전: is_active만 업데이트
-set_={"is_active": True}
-
-# 변경 후: market_warning도 동기화
-set_={"is_active": True, "market_warning": "CAUTION" if ... else None}
-```
-
-- **원인**: 최초 INSERT 시에만 market_warning 설정, 이후 upsert에서 갱신 안 됨
-
-#### 3. `apps/execution_service/main.py` — P0 버그 4개 수정
-
-**Bug 1: `market_warning` bool 타입 오류**
-
-```python
-# 변경 전 (버그)
-market_warning=bool(coin_obj.market_warning)  # bool("NONE") = True → 모든 거래 차단
-
-# 변경 후
-_MARKET_WARNING_VALUES = {"CAUTION", "WARNING", "PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING"}
-market_warning=_is_market_warning(coin.market_warning)  # "NONE" → False
-```
-
-**Bug 2 & 3: `daily_pnl`, `consecutive_losses` 항상 0 고정**
-
-```python
-# 변경 전 (버그)
-daily_pnl=0.0,          # 일일 손실 한도 무력화
-consecutive_losses=0,    # 연속 손실 제한 무력화
-
-# 변경 후: _compute_risk_metrics() 단일 세션 배치 조회
-# - KST 오늘 0시 이후 매도 fill 기반 daily_pnl 계산
-# - 최근 매도 체결 20건 역순 손실 스트릭으로 consecutive_losses 계산
-```
-
-**Bug 4: `entry_price` 단위 오류**
-
-```python
-# 변경 전 (버그)
-entry_price = signal.suggested_stop_loss * (1/(1-0.03)) if ... else 0
-# fallback: krw_balance * 0.1  ← 잔고 금액을 가격으로 사용
-
-# 변경 후: 실시간 현재가 사용
-entry_price = await self.upbit.get_ticker(coin.market)
-# ticker 실패 시 즉시 "rejected" 처리 (무한 재처리 방지)
-```
-
-**추가 수정:**
-- N+1 쿼리 → 단일 세션 JOIN 배치 조회
-- UTC 기준 → `ZoneInfo("Asia/Seoul")` KST 기준으로 교정
-- ticker 실패 시 signal을 "rejected" 처리 (기존: "new" 상태 유지 → 무한 재시도)
-- 미사용 import (`date`, `func`) 제거
-- `coin_obj` 중복 DB 조회 제거
-
----
-
-## 현재 상태 (2026-03-21 기준)
+## 현재 상태 (2026-03-24 기준)
 
 | 항목 | 상태 |
 |------|------|
 | 전체 서비스 기동 | ✅ 정상 |
 | 실시간 시세 WebSocket | ✅ 정상 (Redis 브릿지) |
-| AI 신호 생성 | ✅ 정상 (캔들 50개 이상 시 자동 시작) |
-| Risk Guard 연동 | ✅ 정상 (v0.1.2 수정 완료) |
-| 자동 주문 실행 | ✅ 준비 완료 (신호 생성 시 자동 동작) |
-| 설정 페이지 키 저장 | ✅ 정상 |
+| AI 신호 생성 (Groq) | ✅ 정상 (캔들 50개 이상 시 자동 시작) |
+| Risk Guard 연동 | ✅ 정상 |
+| 자동 주문 실행 | ✅ 정상 (자동매매 ON 시) |
+| SL/TP 모니터 | ✅ 정상 (10초 주기) |
+| 체결 이벤트 WebSocket | ✅ 정상 (`/ws/trade-events`) |
+| 포지션 실시간 업데이트 | ✅ 정상 (`/ws/portfolio`) |
+| 자동매매 ON/OFF 토글 | ✅ 정상 (확인 다이얼로그) |
+| 실시간 P&L | ✅ 정상 (WS ticker 기반, 폴링 없음) |
+| 신뢰도 필터 슬라이더 | ✅ 정상 |
+| 토스트 알림 | ✅ 정상 (체결/SL/TP/리젝) |
+| 주문 내역 페이지 | ✅ 정상 |
+| 설정 페이지 (Groq 키) | ✅ 정상 |
 | 백테스트 UI | ⚠️ 미검증 (backtest_service stub) |
 
 ---
@@ -246,9 +211,9 @@ entry_price = await self.upbit.get_ticker(coin.market)
 | 우선순위 | 항목 | 메모 |
 |----------|------|------|
 | 높음 | `backtest_service` 실제 구현 | 현재 stub 상태 |
-| 중간 | `daily_pnl` 정밀화 | 현재 포지션 avg_entry_price 기준 근사치, 별도 일일 스냅샷 테이블 설계 필요 |
-| 중간 | DB 마이그레이션 전략 | 현재 `create_all` 사용, Alembic으로 전환 필요 |
+| 중간 | `daily_pnl` 정밀화 | 별도 일일 스냅샷 테이블 설계 필요 |
+| 중간 | DB 마이그레이션 전략 | 현재 `create_all`, Alembic 전환 필요 |
 | 중간 | 백테스트 UI 연동 확인 | `/backtest` 페이지 E2E |
-| 낮음 | Settings API DB 저장 구현 | 현재 os.environ 임시 저장 (`.env`로 우회 가능) |
+| 낮음 | Settings API DB 저장 구현 | 현재 os.environ 임시 저장 |
 | 낮음 | 테스트 코드 작성 | pytest 단위 테스트 |
 | 낮음 | CI/CD | GitHub Actions |
