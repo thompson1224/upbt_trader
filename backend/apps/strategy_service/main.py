@@ -37,8 +37,20 @@ class StrategyRunner:
         self.session_factory = get_session_factory()
         self._sentiment_cache: dict[str, tuple[float, float, datetime]] = {}
         # market -> (score, confidence, updated_at)
-        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-        self._redis = aioredis.from_url(redis_url)
+        self._redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+        self._redis: aioredis.Redis | None = None
+
+    async def _get_redis(self) -> aioredis.Redis:
+        """Redis 클라이언트 반환. stale 연결이면 재생성."""
+        try:
+            if self._redis:
+                await self._redis.ping()
+                return self._redis
+        except Exception:
+            logger.warning("Strategy Redis connection stale, reconnecting...")
+            self._redis = None
+        self._redis = aioredis.from_url(self._redis_url)
+        return self._redis
 
     async def run(self):
         logger.info("Strategy service started. strategy=%s", STRATEGY_ID)
@@ -180,7 +192,8 @@ class StrategyRunner:
 
         # Redis로 신호 브로드캐스트
         try:
-            await self._redis.publish("upbit:signal", json.dumps({
+            r = await self._get_redis()
+            await r.publish("upbit:signal", json.dumps({
                 "id": db_signal.id,
                 "market": coin.market,
                 "coinId": coin.id,
