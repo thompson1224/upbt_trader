@@ -25,6 +25,7 @@ PORTFOLIO_PERFORMANCE_CACHE_TTL_SECONDS = 15
 POSITION_SOURCE_STRATEGY = "strategy"
 POSITION_SOURCE_EXTERNAL = "external"
 POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
+KST = timezone(timedelta(hours=9))
 
 
 class PositionAutoTradeRequest(BaseModel):
@@ -225,6 +226,146 @@ def _group_performance(trades: list[dict], key: str) -> list[dict]:
     return rows
 
 
+def _score_band_label(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < 0.50:
+        return "<0.50"
+    if value < 0.60:
+        return "0.50-0.59"
+    if value < 0.70:
+        return "0.60-0.69"
+    if value < 0.80:
+        return "0.70-0.79"
+    return "0.80+"
+
+
+def _group_score_band_performance(trades: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for trade in trades:
+        grouped[_score_band_label(trade.get("finalScore"))].append(trade)
+
+    def _sort_key(label: str) -> tuple[int, str]:
+        order = {
+            "<0.50": 0,
+            "0.50-0.59": 1,
+            "0.60-0.69": 2,
+            "0.70-0.79": 3,
+            "0.80+": 4,
+            "unknown": 5,
+        }
+        return (order.get(label, 99), label)
+
+    rows = []
+    for score_band, items in grouped.items():
+        total = len(items)
+        wins = sum(1 for item in items if item["netPnl"] > 0)
+        rows.append(
+            {
+                "scoreBand": score_band,
+                "trades": total,
+                "winRate": (wins / total) if total else 0.0,
+                "netPnl": sum(item["netPnl"] for item in items),
+            }
+        )
+
+    rows.sort(key=lambda row: _sort_key(row["scoreBand"]))
+    return rows
+
+
+def _sentiment_band_label(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < -0.25:
+        return "<-0.25"
+    if value < 0.0:
+        return "-0.25~-0.01"
+    if value < 0.25:
+        return "0.00-0.24"
+    if value < 0.50:
+        return "0.25-0.49"
+    return "0.50+"
+
+
+def _group_sentiment_band_performance(trades: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for trade in trades:
+        grouped[_sentiment_band_label(trade.get("sentimentScore"))].append(trade)
+
+    def _sort_key(label: str) -> tuple[int, str]:
+        order = {
+            "<-0.25": 0,
+            "-0.25~-0.01": 1,
+            "0.00-0.24": 2,
+            "0.25-0.49": 3,
+            "0.50+": 4,
+            "unknown": 5,
+        }
+        return (order.get(label, 99), label)
+
+    rows = []
+    for sentiment_band, items in grouped.items():
+        total = len(items)
+        wins = sum(1 for item in items if item["netPnl"] > 0)
+        rows.append(
+            {
+                "sentimentBand": sentiment_band,
+                "trades": total,
+                "winRate": (wins / total) if total else 0.0,
+                "netPnl": sum(item["netPnl"] for item in items),
+            }
+        )
+
+    rows.sort(key=lambda row: _sort_key(row["sentimentBand"]))
+    return rows
+
+
+def _hour_block_label(exit_ts: str) -> str:
+    hour = datetime.fromisoformat(exit_ts).astimezone(KST).hour
+    if hour < 4:
+        return "00-04"
+    if hour < 8:
+        return "04-08"
+    if hour < 12:
+        return "08-12"
+    if hour < 16:
+        return "12-16"
+    if hour < 20:
+        return "16-20"
+    return "20-24"
+
+
+def _group_hour_block_performance(trades: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for trade in trades:
+        grouped[_hour_block_label(trade["exitTs"])].append(trade)
+
+    order = {
+        "00-04": 0,
+        "04-08": 1,
+        "08-12": 2,
+        "12-16": 3,
+        "16-20": 4,
+        "20-24": 5,
+    }
+
+    rows = []
+    for hour_block, items in grouped.items():
+        total = len(items)
+        wins = sum(1 for item in items if item["netPnl"] > 0)
+        rows.append(
+            {
+                "hourBlock": hour_block,
+                "trades": total,
+                "winRate": (wins / total) if total else 0.0,
+                "netPnl": sum(item["netPnl"] for item in items),
+            }
+        )
+
+    rows.sort(key=lambda row: order.get(row["hourBlock"], 99))
+    return rows
+
+
 @router.get("/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
     stmt = select(Position, Coin.market).join(Coin)
@@ -413,6 +554,9 @@ async def get_portfolio_performance(
         "summary": _summarize_performance(trades),
         "byMarket": _group_performance(trades, "market"),
         "byExitReason": _group_performance(trades, "exitReason"),
+        "byFinalScoreBand": _group_score_band_performance(trades),
+        "bySentimentBand": _group_sentiment_band_performance(trades),
+        "byHourBlock": _group_hour_block_performance(trades),
         "trades": trades,
     }
     redis_client = None

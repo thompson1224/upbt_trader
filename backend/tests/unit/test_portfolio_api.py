@@ -245,14 +245,41 @@ def test_build_closed_trades_reconstructs_round_trip_from_fills():
 
 def test_summarize_performance_computes_profit_factor_and_drawdown():
     trades = [
-        {"market": "KRW-BTC", "exitReason": "sell_signal", "grossPnl": 12.0, "netPnl": 10.0},
-        {"market": "KRW-ETH", "exitReason": "protection", "grossPnl": -6.0, "netPnl": -8.0},
-        {"market": "KRW-XRP", "exitReason": "sell_signal", "grossPnl": 4.0, "netPnl": 2.0},
+        {
+            "market": "KRW-BTC",
+            "exitReason": "sell_signal",
+            "grossPnl": 12.0,
+            "netPnl": 10.0,
+            "finalScore": 0.82,
+            "sentimentScore": 0.55,
+            "exitTs": "2026-03-25T15:00:00+00:00",
+        },
+        {
+            "market": "KRW-ETH",
+            "exitReason": "protection",
+            "grossPnl": -6.0,
+            "netPnl": -8.0,
+            "finalScore": 0.58,
+            "sentimentScore": -0.10,
+            "exitTs": "2026-03-25T01:00:00+00:00",
+        },
+        {
+            "market": "KRW-XRP",
+            "exitReason": "sell_signal",
+            "grossPnl": 4.0,
+            "netPnl": 2.0,
+            "finalScore": 0.66,
+            "sentimentScore": 0.18,
+            "exitTs": "2026-03-25T07:00:00+00:00",
+        },
     ]
 
     summary = portfolio_module._summarize_performance(trades)
     by_market = portfolio_module._group_performance(trades, "market")
     by_reason = portfolio_module._group_performance(trades, "exitReason")
+    by_score_band = portfolio_module._group_score_band_performance(trades)
+    by_sentiment_band = portfolio_module._group_sentiment_band_performance(trades)
+    by_hour_block = portfolio_module._group_hour_block_performance(trades)
 
     assert summary["totalTrades"] == 3
     assert summary["winRate"] == pytest.approx(2 / 3)
@@ -261,6 +288,12 @@ def test_summarize_performance_computes_profit_factor_and_drawdown():
     assert summary["maxDrawdown"] == pytest.approx(8.0)
     assert by_market[0]["market"] == "KRW-BTC"
     assert by_reason[0]["exitReason"] == "sell_signal"
+    assert [row["scoreBand"] for row in by_score_band] == ["0.50-0.59", "0.60-0.69", "0.80+"]
+    assert by_score_band[0]["netPnl"] == pytest.approx(-8.0)
+    assert [row["sentimentBand"] for row in by_sentiment_band] == ["-0.25~-0.01", "0.00-0.24", "0.50+"]
+    assert by_sentiment_band[0]["netPnl"] == pytest.approx(-8.0)
+    assert [row["hourBlock"] for row in by_hour_block] == ["00-04", "08-12", "16-20"]
+    assert by_hour_block[2]["netPnl"] == pytest.approx(2.0)
 
 
 @pytest.mark.asyncio
@@ -269,6 +302,9 @@ async def test_get_portfolio_performance_reads_from_cache(monkeypatch: pytest.Mo
         "summary": {"totalTrades": 1, "winRate": 1.0},
         "byMarket": [{"market": "KRW-BTC", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
         "byExitReason": [{"exitReason": "take_profit", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
+        "byFinalScoreBand": [{"scoreBand": "0.80+", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
+        "bySentimentBand": [{"sentimentBand": "0.50+", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
+        "byHourBlock": [{"hourBlock": "20-24", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
         "trades": [{"market": "KRW-BTC", "exitReason": "take_profit", "netPnl": 100.0}],
     }
     fake_redis = _FakeRedis()
@@ -333,6 +369,9 @@ async def test_get_portfolio_performance_caches_and_separates_tp_reason(monkeypa
     assert fake_db.calls == 1
     assert response["summary"]["totalTrades"] == 1
     assert response["byExitReason"][0]["exitReason"] == "take_profit"
+    assert response["byFinalScoreBand"][0]["scoreBand"] == "<0.50"
+    assert response["bySentimentBand"][0]["sentimentBand"] == "0.25-0.49"
+    assert response["byHourBlock"][0]["hourBlock"] == "08-12"
     assert response["trades"][0]["exitReason"] == "take_profit"
     cache_key = portfolio_module._performance_cache_key(50, None, None)
     assert cache_key in fake_redis.values

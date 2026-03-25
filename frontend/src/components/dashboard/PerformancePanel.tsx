@@ -50,7 +50,7 @@ function BreakdownList({
 }: {
   title: string;
   rows: PerformanceBreakdownRow[];
-  keyName: "market" | "exitReason";
+  keyName: "market" | "exitReason" | "scoreBand" | "sentimentBand" | "hourBlock";
 }) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
@@ -188,6 +188,9 @@ export default function PerformancePanel() {
   const summary = data?.summary;
   const byMarket = data?.byMarket ?? [];
   const byExitReason = data?.byExitReason ?? [];
+  const byFinalScoreBand = data?.byFinalScoreBand ?? [];
+  const bySentimentBand = data?.bySentimentBand ?? [];
+  const byHourBlock = data?.byHourBlock ?? [];
   const trades = data?.trades ?? [];
 
   if (!summary || summary.totalTrades === 0) {
@@ -269,7 +272,7 @@ export default function PerformancePanel() {
       </div>
 
       <div className="grid flex-1 grid-rows-[auto_1fr] gap-3 p-3">
-        <div className="grid grid-cols-[1.3fr_0.7fr_0.7fr] gap-3">
+        <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
           <div className="grid grid-cols-2 gap-3">
             {summaryCards.map((card) => {
               const Icon = card.icon;
@@ -294,6 +297,9 @@ export default function PerformancePanel() {
 
           <BreakdownList title="시장별 손익" rows={byMarket} keyName="market" />
           <BreakdownList title="청산 사유" rows={byExitReason} keyName="exitReason" />
+          <BreakdownList title="Final Score 구간" rows={byFinalScoreBand} keyName="scoreBand" />
+          <BreakdownList title="감성 점수 구간" rows={bySentimentBand} keyName="sentimentBand" />
+          <BreakdownList title="시간대별 성과" rows={byHourBlock} keyName="hourBlock" />
         </div>
 
         <RecentTradesTable trades={trades} />

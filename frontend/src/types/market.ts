@@ -107,6 +107,9 @@ export interface PerformanceSummary {
 export interface PerformanceBreakdownRow {
   market?: string;
   exitReason?: string;
+  scoreBand?: string;
+  sentimentBand?: string;
+  hourBlock?: string;
   trades: number;
   winRate: number;
   netPnl: number;
@@ -137,5 +140,8 @@ export interface PerformanceResponse {
   summary: PerformanceSummary;
   byMarket: PerformanceBreakdownRow[];
   byExitReason: PerformanceBreakdownRow[];
+  byFinalScoreBand: PerformanceBreakdownRow[];
+  bySentimentBand: PerformanceBreakdownRow[];
+  byHourBlock: PerformanceBreakdownRow[];
   trades: PerformanceTrade[];
 }
