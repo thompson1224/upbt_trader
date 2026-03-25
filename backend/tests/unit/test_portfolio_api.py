@@ -245,8 +245,8 @@ async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
                             final_score=0.51,
                             confidence=0.76,
                             side="hold",
-                            status="new",
-                            rejection_reason=None,
+                            status="executed",
+                            rejection_reason="held_position_hold",
                         )
                     ]
                 )
@@ -261,6 +261,7 @@ async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
     assert response[0]["distance_to_stop_loss_pct"] == pytest.approx((145.0 - 135.8) / 145.0 * 100, abs=1e-4)
     assert response[0]["distance_to_take_profit_pct"] == pytest.approx((148.4 - 145.0) / 145.0 * 100, abs=1e-4)
     assert response[0]["latest_signal"]["side"] == "hold"
+    assert response[0]["latest_signal"]["display_reason"] == "보유 포지션 유지 조건이라 관망 중입니다."
     assert response[0]["latest_sell_signal"] is None
     assert response[0]["sell_wait_reason_code"] == "hold_signal"
     assert "hold" in response[0]["sell_wait_reason"]

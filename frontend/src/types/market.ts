@@ -37,6 +37,7 @@ export interface SignalData {
   suggestedStopLoss: number | null;
   suggestedTakeProfit: number | null;
   rejectionReason: string | null;
+  displayReason: string | null;
 }
 
 export interface Position {
@@ -62,6 +63,7 @@ export interface Position {
     finalScore: number;
     confidence: number;
     rejectionReason: string | null;
+    displayReason: string | null;
   } | null;
   latestSellSignal: {
     id: number;
@@ -72,6 +74,7 @@ export interface Position {
     finalScore: number;
     confidence: number;
     rejectionReason: string | null;
+    displayReason: string | null;
   } | null;
   sellWaitReasonCode: string;
   sellWaitReason: string;

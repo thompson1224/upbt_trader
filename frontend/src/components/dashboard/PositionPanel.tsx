@@ -115,9 +115,9 @@ export default function PositionPanel() {
                 {latestSellSignal && (
                   <div className="mt-0.5 text-gray-600">
                     최근 매도 신호: {new Date(latestSellSignal.ts).toLocaleTimeString("ko-KR")} · {latestSellSignal.status}
-                    {latestSellSignal.rejectionReason && (
+                    {(latestSellSignal.displayReason || latestSellSignal.rejectionReason) && (
                       <span className="ml-2 text-amber-400">
-                        {latestSellSignal.rejectionReason}
+                        {latestSellSignal.displayReason || latestSellSignal.rejectionReason}
                       </span>
                     )}
                   </div>

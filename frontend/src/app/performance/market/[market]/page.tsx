@@ -222,9 +222,9 @@ function RecentSignalCard({
             <div className="text-sm text-gray-300">{alignmentText}</div>
             <div className="mt-1 text-xs text-gray-600">{formatDate(latestSignal.ts)} · {latestSignal.strategyId}</div>
           </div>
-          {latestSignal.rejectionReason && (
+          {(latestSignal.displayReason || latestSignal.rejectionReason) && (
             <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2 text-xs text-gray-400">
-              최근 신호 사유: {latestSignal.rejectionReason}
+              최근 신호 사유: {latestSignal.displayReason || latestSignal.rejectionReason}
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 text-sm">
@@ -262,9 +262,9 @@ function RecentSignalCard({
                       <div className="text-gray-600">{signal.status}</div>
                     </div>
                   </div>
-                  {signal.rejectionReason && (
+                  {(signal.displayReason || signal.rejectionReason) && (
                     <div className="mt-2 text-[11px] text-gray-500">
-                      {signal.rejectionReason}
+                      {signal.displayReason || signal.rejectionReason}
                     </div>
                   )}
                 </div>

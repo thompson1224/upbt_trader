@@ -112,9 +112,9 @@ function SignalCard({ signal }: { signal: import("@/types/market").SignalData })
       <div className="mt-1 text-xs text-gray-600">
         {new Date(signal.ts).toLocaleTimeString("ko-KR")}
       </div>
-      {signal.rejectionReason && (
+      {(signal.displayReason || signal.rejectionReason) && (
         <div className="mt-2 rounded border border-gray-800 bg-gray-900/80 px-2 py-1 text-[11px] text-gray-400">
-          {signal.rejectionReason}
+          {signal.displayReason || signal.rejectionReason}
         </div>
       )}
     </div>

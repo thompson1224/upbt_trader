@@ -16,6 +16,7 @@ from libs.audit import record_audit_event
 from libs.config import get_settings
 from libs.db.session import get_db
 from libs.db.models import Position, Coin, RuntimeState, Fill, Order, Signal
+from libs.signal_reason import humanize_signal_reason
 
 router = APIRouter()
 PORTFOLIO_EQUITY_CURVE_KEY = "portfolio:equity_curve"
@@ -378,6 +379,7 @@ def _serialize_signal(signal: Signal | None) -> dict | None:
         "final_score": signal.final_score,
         "confidence": signal.confidence,
         "rejection_reason": signal.rejection_reason,
+        "display_reason": humanize_signal_reason(signal.rejection_reason),
     }
 
 

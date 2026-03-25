@@ -35,6 +35,7 @@ type RawSignalData = {
   suggested_stop_loss: number | null;
   suggested_take_profit: number | null;
   rejection_reason: string | null;
+  display_reason: string | null;
 };
 
 export function mapSignalData(signal: RawSignalData) {
@@ -54,6 +55,7 @@ export function mapSignalData(signal: RawSignalData) {
     suggestedStopLoss: signal.suggested_stop_loss,
     suggestedTakeProfit: signal.suggested_take_profit,
     rejectionReason: signal.rejection_reason,
+    displayReason: signal.display_reason,
   };
 }
 
@@ -122,6 +124,7 @@ export const api = {
             final_score: number;
             confidence: number;
             rejection_reason: string | null;
+            display_reason: string | null;
           } | null;
           latest_sell_signal: {
             id: number;
@@ -132,6 +135,7 @@ export const api = {
             final_score: number;
             confidence: number;
             rejection_reason: string | null;
+            display_reason: string | null;
           } | null;
           sell_wait_reason_code: string;
           sell_wait_reason: string;
@@ -159,6 +163,7 @@ export const api = {
                 finalScore: pos.latest_signal.final_score,
                 confidence: pos.latest_signal.confidence,
                 rejectionReason: pos.latest_signal.rejection_reason,
+                displayReason: pos.latest_signal.display_reason,
               }
             : null,
           latestSellSignal: pos.latest_sell_signal
@@ -171,6 +176,7 @@ export const api = {
                 finalScore: pos.latest_sell_signal.final_score,
                 confidence: pos.latest_sell_signal.confidence,
                 rejectionReason: pos.latest_sell_signal.rejection_reason,
+                displayReason: pos.latest_sell_signal.display_reason,
               }
             : null,
           sellWaitReasonCode: pos.sell_wait_reason_code,

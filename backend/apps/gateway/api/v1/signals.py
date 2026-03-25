@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from libs.db.session import get_db
 from libs.db.models import Signal, Coin
+from libs.signal_reason import humanize_signal_reason
 from schemas.signal import SignalResponse
 
 router = APIRouter()
@@ -33,5 +34,6 @@ async def get_signals(
     for sig, coin_market in rows:
         data = SignalResponse.model_validate(sig)
         data.market = coin_market
+        data.display_reason = humanize_signal_reason(sig.rejection_reason)
         signals.append(data)
     return signals
