@@ -368,6 +368,16 @@ http://localhost:3000/performance/market/KRW-BTC
 - **실시간 평가손익**: WebSocket 시세 기반 자동 계산 (API 호출 없음)
 - SL(손절가) / TP(익절가) 표시
 - 상단: 전체 미실현 손익 합계
+- 최근 신호(`buy / sell / hold`)와 신호 상태 표시
+- 최근 매도 신호가 있으면 별도로 상태/거절 사유 표시
+- `SL까지 -x%`, `TP까지 +x%` 형태로 현재가 기준 거리 표시
+- `매도 대기 사유`를 서버 판단 기준으로 표시
+  - 예: `최근 신호가 hold 라서 매도 조건이 아직 아닙니다`
+  - 예: `최근 매도 신호가 거절됐습니다: Max consecutive losses reached: 5`
+  - 예: `현재가가 익절가에 도달했습니다. 주문 체결 또는 동기화 상태를 확인하세요`
+- 각 포지션 카드에서 바로 이동 가능
+  - `매도 주문 보기` → `/orders?market=KRW-XXX&side=sell`
+  - `감사로그 보기` → `/audit?source=execution&market=KRW-XXX`
 
 ---
 
@@ -384,6 +394,20 @@ http://localhost:3000/performance/market/KRW-BTC
 
 - 10초마다 자동 갱신
 - 상태: `done`(체결), `wait`(미체결), `cancel`(취소)
+- 상단 `최근 실행/거절 사유` 카드에서 `risk_rejected`, `order_failed` 최근 이벤트 확인 가능
+- URL 쿼리 필터 지원
+  - 예: `/orders?market=KRW-SOL&side=sell`
+  - 예: `/orders?market=KRW-BTC&state=done`
+
+### 5-7-1. 감사 로그 페이지 (`/audit`)
+
+- execution / settings 소스별 필터
+- info / warning / error 레벨 필터
+- payload 펼쳐보기
+- URL 쿼리 필터 지원
+  - 예: `/audit?source=execution&market=KRW-SOL`
+  - 예: `/audit?source=execution&eventType=order_failed`
+  - 예: `/audit?source=execution&market=KRW-SOL&eventType=risk_rejected`
 
 ---
 
@@ -806,11 +830,11 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/markets` | KRW 전체 마켓 목록 | — |
 | GET | `/api/v1/markets/{market}/candles` | 캔들 데이터 | `interval=1m`, `limit=200` |
 | GET | `/api/v1/signals` | AI 신호 목록 | `market=KRW-BTC`, `side=buy`, `limit=20` |
-| GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel` |
-| GET | `/api/v1/positions` | 포지션 현황 | — |
+| GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel`, `market` |
+| GET | `/api/v1/positions` | 포지션 현황 | `latest_signal`, `latest_sell_signal`, `sell_wait_reason`, `SL/TP 거리` 포함 |
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | `limit`, `days` |
 | GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
-| GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `limit` |
+| GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `market`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |
 | POST | `/api/v1/secrets/groq-key` | Groq 키 저장 | `api_key` |

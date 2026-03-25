@@ -14,6 +14,7 @@ _SIDE_MAP = {"bid": "buy", "ask": "sell"}
 @router.get("/orders")
 async def get_orders(
     state: Optional[str] = None,
+    market: Optional[str] = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ):
@@ -23,6 +24,8 @@ async def get_orders(
     )
     if state:
         stmt = stmt.where(Order.state == state)
+    if market:
+        stmt = stmt.where(Coin.market == market.upper())
     stmt = stmt.order_by(Order.created_at.desc()).limit(limit)
     result = await db.execute(stmt)
     rows = result.all()

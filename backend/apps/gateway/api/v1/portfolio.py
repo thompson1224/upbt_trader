@@ -381,12 +381,63 @@ def _serialize_signal(signal: Signal | None) -> dict | None:
     }
 
 
-def _describe_sell_wait_reason(position: Position, latest_signal: Signal | None) -> tuple[str, str]:
+def _estimate_current_price(position: Position) -> float | None:
+    if position.qty <= 0:
+        return None
+    return position.avg_entry_price + (position.unrealized_pnl / position.qty)
+
+
+def _distance_to_threshold_pct(current_price: float | None, threshold: float | None, *, direction: str) -> float | None:
+    if current_price is None or current_price <= 0 or threshold is None:
+        return None
+    if direction == "up":
+        return ((threshold - current_price) / current_price) * 100
+    return ((current_price - threshold) / current_price) * 100
+
+
+def _describe_sell_wait_reason(
+    position: Position,
+    latest_signal: Signal | None,
+    latest_sell_signal: Signal | None,
+    current_price: float | None,
+) -> tuple[str, str]:
     if position.source != POSITION_SOURCE_STRATEGY:
         return (
             "external_position",
             "외부 포지션이라 자동 매도 관리 대상이 아닙니다.",
         )
+    if position.take_profit is not None and current_price is not None and current_price >= position.take_profit:
+        return (
+            "take_profit_reached_pending_sync",
+            "현재가가 익절가에 도달했습니다. 주문 체결 또는 동기화 상태를 확인하세요.",
+        )
+    if position.stop_loss is not None and current_price is not None and current_price <= position.stop_loss:
+        return (
+            "stop_loss_reached_pending_sync",
+            "현재가가 손절가에 도달했습니다. 주문 체결 또는 동기화 상태를 확인하세요.",
+        )
+    if latest_sell_signal is not None:
+        if latest_sell_signal.status in {"new", "approved"}:
+            return (
+                "sell_signal_pending",
+                "최근 매도 신호가 발생했고 주문 실행 대기 중입니다.",
+            )
+        if latest_sell_signal.status == "executed":
+            return (
+                "sell_signal_executed",
+                "최근 매도 신호는 이미 실행 처리됐고 체결/동기화를 기다리는 상태일 수 있습니다.",
+            )
+        if latest_sell_signal.status == "rejected":
+            reason = latest_sell_signal.rejection_reason or "사유 없음"
+            return (
+                "sell_signal_rejected",
+                f"최근 매도 신호가 거절됐습니다: {reason}",
+            )
+        if latest_sell_signal.status == "expired":
+            return (
+                "sell_signal_expired",
+                "최근 매도 신호가 만료돼 새 신호를 기다리는 중입니다.",
+            )
     if latest_signal is None:
         return (
             "no_recent_signal",
@@ -401,27 +452,6 @@ def _describe_sell_wait_reason(position: Position, latest_signal: Signal | None)
         return (
             "buy_signal",
             "최근 신호가 buy 라서 포지션 유지 중입니다.",
-        )
-    if latest_signal.status in {"new", "approved"}:
-        return (
-            "sell_signal_pending",
-            "최근 매도 신호가 발생했고 주문 실행 대기 중입니다.",
-        )
-    if latest_signal.status == "executed":
-        return (
-            "sell_signal_executed",
-            "최근 매도 신호는 이미 실행 처리됐고 체결/동기화를 기다리는 상태일 수 있습니다.",
-        )
-    if latest_signal.status == "rejected":
-        reason = latest_signal.rejection_reason or "사유 없음"
-        return (
-            "sell_signal_rejected",
-            f"최근 매도 신호가 거절됐습니다: {reason}",
-        )
-    if latest_signal.status == "expired":
-        return (
-            "sell_signal_expired",
-            "최근 매도 신호가 만료돼 새 신호를 기다리는 중입니다.",
         )
     return (
         "sell_signal_unknown",
@@ -445,13 +475,23 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
         .order_by(Signal.coin_id.asc(), Signal.ts.desc())
     )
     latest_signal_by_coin_id: dict[int, Signal] = {}
+    latest_sell_signal_by_coin_id: dict[int, Signal] = {}
     for signal in signal_result.scalars():
         latest_signal_by_coin_id.setdefault(signal.coin_id, signal)
+        if signal.side == "sell":
+            latest_sell_signal_by_coin_id.setdefault(signal.coin_id, signal)
 
     payload = []
     for pos, market, coin_id in active_rows:
         latest_signal = latest_signal_by_coin_id.get(coin_id)
-        reason_code, reason_text = _describe_sell_wait_reason(pos, latest_signal)
+        latest_sell_signal = latest_sell_signal_by_coin_id.get(coin_id)
+        current_price = _estimate_current_price(pos)
+        reason_code, reason_text = _describe_sell_wait_reason(
+            pos,
+            latest_signal,
+            latest_sell_signal,
+            current_price,
+        )
         payload.append(
             {
                 "id": pos.id,
@@ -463,8 +503,12 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
                 "source": pos.source,
                 "stop_loss": pos.stop_loss,
                 "take_profit": pos.take_profit,
+                "current_price": current_price,
+                "distance_to_stop_loss_pct": _distance_to_threshold_pct(current_price, pos.stop_loss, direction="down"),
+                "distance_to_take_profit_pct": _distance_to_threshold_pct(current_price, pos.take_profit, direction="up"),
                 "auto_trade_managed": pos.source == POSITION_SOURCE_STRATEGY,
                 "latest_signal": _serialize_signal(latest_signal),
+                "latest_sell_signal": _serialize_signal(latest_sell_signal),
                 "sell_wait_reason_code": reason_code,
                 "sell_wait_reason": reason_text,
             }

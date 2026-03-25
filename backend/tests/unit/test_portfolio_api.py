@@ -257,9 +257,81 @@ async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
     assert len(response) == 1
     assert response[0]["market"] == "KRW-DOGE"
     assert response[0]["auto_trade_managed"] is True
+    assert response[0]["current_price"] == pytest.approx(145.0)
+    assert response[0]["distance_to_stop_loss_pct"] == pytest.approx((145.0 - 135.8) / 145.0 * 100, abs=1e-4)
+    assert response[0]["distance_to_take_profit_pct"] == pytest.approx((148.4 - 145.0) / 145.0 * 100, abs=1e-4)
     assert response[0]["latest_signal"]["side"] == "hold"
+    assert response[0]["latest_sell_signal"] is None
     assert response[0]["sell_wait_reason_code"] == "hold_signal"
     assert "hold" in response[0]["sell_wait_reason"]
+
+
+@pytest.mark.asyncio
+async def test_get_positions_prefers_latest_sell_signal_reason_over_latest_general_signal():
+    coin = Coin(
+        id=99,
+        market="KRW-SOL",
+        base_currency="SOL",
+        quote_currency="KRW",
+        is_active=True,
+        market_warning=None,
+    )
+    position = Position(
+        id=10,
+        coin_id=99,
+        qty=0.1,
+        avg_entry_price=100000.0,
+        unrealized_pnl=500.0,
+        realized_pnl=0.0,
+        source="strategy",
+        stop_loss=97000.0,
+        take_profit=106000.0,
+    )
+
+    sell_signal = portfolio_module.Signal(
+        id=101,
+        strategy_id="hybrid_v1",
+        coin_id=coin.id,
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 9, 0, tzinfo=timezone.utc),
+        ta_score=0.33,
+        sentiment_score=0.12,
+        final_score=0.48,
+        confidence=0.65,
+        side="sell",
+        status="rejected",
+        rejection_reason="Max consecutive losses reached: 5",
+    )
+    newer_hold_signal = portfolio_module.Signal(
+        id=102,
+        strategy_id="hybrid_v1",
+        coin_id=coin.id,
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 10, 0, tzinfo=timezone.utc),
+        ta_score=0.29,
+        sentiment_score=0.10,
+        final_score=0.42,
+        confidence=0.70,
+        side="hold",
+        status="new",
+        rejection_reason=None,
+    )
+
+    class _PositionsDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is Position:
+                return _FakeRowsResult([(position, coin.market, coin.id)])
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult([newer_hold_signal, sell_signal])
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+    response = await portfolio_module.get_positions(db=_PositionsDB())
+
+    assert response[0]["latest_signal"]["side"] == "hold"
+    assert response[0]["latest_sell_signal"]["side"] == "sell"
+    assert response[0]["sell_wait_reason_code"] == "sell_signal_rejected"
+    assert "Max consecutive losses reached" in response[0]["sell_wait_reason"]
 
 
 def test_build_closed_trades_reconstructs_round_trip_from_fills():

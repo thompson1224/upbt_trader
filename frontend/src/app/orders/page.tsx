@@ -1,22 +1,45 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { api } from "@/services/api";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 import { cn } from "@/utils/cn";
 import type { Order } from "@/types/market";
 
-const STATES = ["전체", "done", "wait", "cancel"];
-const SIDES = ["전체", "buy", "sell"];
+const STATES = ["전체", "done", "wait", "cancel"] as const;
+const SIDES = ["전체", "buy", "sell"] as const;
+type OrderStateFilter = (typeof STATES)[number];
+type OrderSideFilter = (typeof SIDES)[number];
 
-export default function OrdersPage() {
-  const [stateFilter, setStateFilter] = useState("전체");
-  const [sideFilter, setSideFilter] = useState("전체");
+function isOrderStateFilter(value: string): value is OrderStateFilter {
+  return (STATES as readonly string[]).includes(value);
+}
+
+function isOrderSideFilter(value: string): value is OrderSideFilter {
+  return (SIDES as readonly string[]).includes(value);
+}
+
+function OrdersPageContent() {
+  const searchParams = useSearchParams();
+  const initialState = searchParams.get("state") ?? "전체";
+  const initialSide = searchParams.get("side") ?? "전체";
+  const marketFilter = searchParams.get("market") ?? "";
+  const [stateFilter, setStateFilter] = useState(
+    isOrderStateFilter(initialState) ? initialState : "전체"
+  );
+  const [sideFilter, setSideFilter] = useState(
+    isOrderSideFilter(initialSide) ? initialSide : "전체"
+  );
 
   const { data: orders = [] } = useQuery<Order[]>({
-    queryKey: ["orders", stateFilter],
-    queryFn: () => api.orders.list(stateFilter === "전체" ? undefined : stateFilter),
+    queryKey: ["orders", stateFilter, marketFilter],
+    queryFn: () =>
+      api.orders.list({
+        state: stateFilter === "전체" ? undefined : stateFilter,
+        market: marketFilter || undefined,
+      }),
     refetchInterval: 10_000,
   });
 
@@ -24,10 +47,11 @@ export default function OrdersPage() {
     (o) => sideFilter === "전체" || o.side === sideFilter
   );
   const { data: recentExecutionEvents = [] } = useQuery({
-    queryKey: ["audit-events", "execution", "recent-blockers"],
+    queryKey: ["audit-events", "execution", "recent-blockers", marketFilter],
     queryFn: () =>
       api.audit.list({
         source: "execution",
+        market: marketFilter || undefined,
         limit: 20,
       }),
     refetchInterval: 10_000,
@@ -43,6 +67,14 @@ export default function OrdersPage() {
         <GlobalHeader />
         <main className="flex-1 overflow-auto p-6">
           <h1 className="text-lg font-bold mb-4">주문 내역</h1>
+          {marketFilter && (
+            <div className="mb-4 text-sm text-gray-500">
+              현재 마켓 필터:
+              <span className="ml-2 rounded bg-slate-800 px-2 py-1 font-mono text-gray-200">
+                {marketFilter}
+              </span>
+            </div>
+          )}
 
           <div className="mb-4 rounded-xl border border-gray-800 bg-gray-900 p-4">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
@@ -177,5 +209,13 @@ export default function OrdersPage() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-950" />}>
+      <OrdersPageContent />
+    </Suspense>
   );
 }

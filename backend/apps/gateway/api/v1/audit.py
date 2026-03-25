@@ -18,6 +18,7 @@ async def get_audit_events(
     limit: int = Query(100, ge=1, le=500),
     event_type: Optional[str] = None,
     source: Optional[str] = None,
+    market: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(AuditEvent)
@@ -25,6 +26,8 @@ async def get_audit_events(
         stmt = stmt.where(AuditEvent.event_type == event_type)
     if source:
         stmt = stmt.where(AuditEvent.source == source)
+    if market:
+        stmt = stmt.where(AuditEvent.market == market.upper())
     stmt = stmt.order_by(AuditEvent.created_at.desc()).limit(limit)
 
     rows = (await db.execute(stmt)).scalars().all()

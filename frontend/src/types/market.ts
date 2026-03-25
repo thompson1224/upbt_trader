@@ -48,12 +48,25 @@ export interface Position {
   source: "strategy" | "external";
   stopLoss: number | null;
   takeProfit: number | null;
+  currentPrice: number | null;
+  distanceToStopLossPct: number | null;
+  distanceToTakeProfitPct: number | null;
   autoTradeManaged: boolean;
   latestSignal: {
     id: number;
     strategyId: string;
     ts: string;
     side: "buy" | "sell" | "hold";
+    status: string;
+    finalScore: number;
+    confidence: number;
+    rejectionReason: string | null;
+  } | null;
+  latestSellSignal: {
+    id: number;
+    strategyId: string;
+    ts: string;
+    side: "sell";
     status: string;
     finalScore: number;
     confidence: number;

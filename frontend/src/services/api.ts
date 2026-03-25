@@ -72,16 +72,23 @@ export const api = {
         .then((r) => (r.data as RawSignalData[]).map(mapSignalData)),
   },
   orders: {
-    list: (state?: string) =>
-      apiClient.get("/orders", { params: { state } }).then((r) => r.data),
+    list: (params?: { state?: string; market?: string; limit?: number }) =>
+      apiClient.get("/orders", {
+        params: {
+          state: params?.state,
+          market: params?.market,
+          limit: params?.limit,
+        },
+      }).then((r) => r.data),
   },
   audit: {
-    list: (params?: { eventType?: string; source?: string; limit?: number }) =>
+    list: (params?: { eventType?: string; source?: string; market?: string; limit?: number }) =>
       apiClient
         .get("/audit-events", {
           params: {
             event_type: params?.eventType,
             source: params?.source,
+            market: params?.market,
             limit: params?.limit,
           },
         })
@@ -100,12 +107,25 @@ export const api = {
           source: "strategy" | "external";
           stop_loss: number | null;
           take_profit: number | null;
+          current_price: number | null;
+          distance_to_stop_loss_pct: number | null;
+          distance_to_take_profit_pct: number | null;
           auto_trade_managed: boolean;
           latest_signal: {
             id: number;
             strategy_id: string;
             ts: string;
             side: "buy" | "sell" | "hold";
+            status: string;
+            final_score: number;
+            confidence: number;
+            rejection_reason: string | null;
+          } | null;
+          latest_sell_signal: {
+            id: number;
+            strategy_id: string;
+            ts: string;
+            side: "sell";
             status: string;
             final_score: number;
             confidence: number;
@@ -123,6 +143,9 @@ export const api = {
           source: pos.source,
           stopLoss: pos.stop_loss,
           takeProfit: pos.take_profit,
+          currentPrice: pos.current_price,
+          distanceToStopLossPct: pos.distance_to_stop_loss_pct,
+          distanceToTakeProfitPct: pos.distance_to_take_profit_pct,
           autoTradeManaged: pos.auto_trade_managed,
           latestSignal: pos.latest_signal
             ? {
@@ -134,6 +157,18 @@ export const api = {
                 finalScore: pos.latest_signal.final_score,
                 confidence: pos.latest_signal.confidence,
                 rejectionReason: pos.latest_signal.rejection_reason,
+              }
+            : null,
+          latestSellSignal: pos.latest_sell_signal
+            ? {
+                id: pos.latest_sell_signal.id,
+                strategyId: pos.latest_sell_signal.strategy_id,
+                ts: pos.latest_sell_signal.ts,
+                side: "sell",
+                status: pos.latest_sell_signal.status,
+                finalScore: pos.latest_sell_signal.final_score,
+                confidence: pos.latest_sell_signal.confidence,
+                rejectionReason: pos.latest_sell_signal.rejection_reason,
               }
             : null,
           sellWaitReasonCode: pos.sell_wait_reason_code,

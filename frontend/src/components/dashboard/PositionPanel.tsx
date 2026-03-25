@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
@@ -48,14 +49,9 @@ export default function PositionPanel() {
                 ? ((livePrice - pos.avgEntryPrice) / pos.avgEntryPrice) * 100
                 : 0;
             const latestSignal = pos.latestSignal;
-            const tpGapPct =
-              pos.takeProfit && livePrice > 0
-                ? ((pos.takeProfit - livePrice) / livePrice) * 100
-                : null;
-            const slGapPct =
-              pos.stopLoss && livePrice > 0
-                ? ((livePrice - pos.stopLoss) / livePrice) * 100
-                : null;
+            const latestSellSignal = pos.latestSellSignal;
+            const tpGapPct = pos.distanceToTakeProfitPct;
+            const slGapPct = pos.distanceToStopLossPct;
             const pendingReason =
               pos.takeProfit && livePrice >= pos.takeProfit
                 ? "익절 가격 도달 구간입니다. 체결 동기화 여부를 확인하세요."
@@ -116,6 +112,16 @@ export default function PositionPanel() {
                     </span>
                   </div>
                 )}
+                {latestSellSignal && (
+                  <div className="mt-0.5 text-gray-600">
+                    최근 매도 신호: {new Date(latestSellSignal.ts).toLocaleTimeString("ko-KR")} · {latestSellSignal.status}
+                    {latestSellSignal.rejectionReason && (
+                      <span className="ml-2 text-amber-400">
+                        {latestSellSignal.rejectionReason}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {(pos.stopLoss || pos.takeProfit) && (
                   <div className="text-gray-700 mt-0.5">
                     {pos.stopLoss && (
@@ -142,6 +148,20 @@ export default function PositionPanel() {
                 )}
                 <div className="mt-1 text-[11px] text-gray-500">
                   매도 대기 사유: {pendingReason}
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <Link
+                    href={`/orders?market=${encodeURIComponent(pos.market)}&side=sell`}
+                    className="rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-gray-100"
+                  >
+                    매도 주문 보기
+                  </Link>
+                  <Link
+                    href={`/audit?source=execution&market=${encodeURIComponent(pos.market)}`}
+                    className="rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-gray-100"
+                  >
+                    감사로그 보기
+                  </Link>
                 </div>
               </div>
             );

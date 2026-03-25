@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { api } from "@/services/api";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
@@ -11,17 +12,38 @@ import type { AuditEvent } from "@/types/market";
 
 const LEVELS = ["전체", "info", "warning", "error"];
 const SOURCES = ["전체", "settings", "execution"];
+type AuditLevelFilter = (typeof LEVELS)[number];
+type AuditSourceFilter = (typeof SOURCES)[number];
 
-export default function AuditPage() {
-  const [levelFilter, setLevelFilter] = useState("전체");
-  const [sourceFilter, setSourceFilter] = useState("전체");
+function isAuditLevelFilter(value: string): value is AuditLevelFilter {
+  return (LEVELS as readonly string[]).includes(value);
+}
+
+function isAuditSourceFilter(value: string): value is AuditSourceFilter {
+  return (SOURCES as readonly string[]).includes(value);
+}
+
+function AuditPageContent() {
+  const searchParams = useSearchParams();
+  const initialLevel = searchParams.get("level") ?? "전체";
+  const initialSource = searchParams.get("source") ?? "전체";
+  const eventTypeFilter = searchParams.get("eventType") ?? "";
+  const marketFilter = searchParams.get("market") ?? "";
+  const [levelFilter, setLevelFilter] = useState(
+    isAuditLevelFilter(initialLevel) ? initialLevel : "전체"
+  );
+  const [sourceFilter, setSourceFilter] = useState(
+    isAuditSourceFilter(initialSource) ? initialSource : "전체"
+  );
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const { data: events = [] } = useQuery<AuditEvent[]>({
-    queryKey: ["audit-events", sourceFilter],
+    queryKey: ["audit-events", sourceFilter, eventTypeFilter, marketFilter],
     queryFn: () =>
       api.audit.list({
+        eventType: eventTypeFilter || undefined,
         source: sourceFilter === "전체" ? undefined : sourceFilter,
+        market: marketFilter || undefined,
         limit: 100,
       }),
     refetchInterval: 10_000,
@@ -49,6 +71,20 @@ export default function AuditPage() {
               최근 {filtered.length}건
             </div>
           </div>
+          {(marketFilter || eventTypeFilter) && (
+            <div className="mb-4 flex gap-2 text-sm text-gray-500">
+              {marketFilter && (
+                <span className="rounded bg-slate-800 px-2 py-1 font-mono text-gray-200">
+                  {marketFilter}
+                </span>
+              )}
+              {eventTypeFilter && (
+                <span className="rounded bg-slate-800 px-2 py-1 font-mono text-gray-200">
+                  {eventTypeFilter}
+                </span>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-4 mb-4 flex-wrap">
             <div className="flex gap-1">
@@ -168,5 +204,13 @@ export default function AuditPage() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function AuditPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-950" />}>
+      <AuditPageContent />
+    </Suspense>
   );
 }
