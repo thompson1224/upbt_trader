@@ -25,6 +25,7 @@ POSITION_SOURCE_EXTERNAL = "external"
 POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
+MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
 MANUAL_TEST_STRATEGY_ID = "manual-test"
 
 
@@ -233,6 +234,18 @@ def _resolve_manual_test_qty(
     return position_qty
 
 
+def _is_buy_signal_below_final_score_threshold(
+    *,
+    side: str,
+    final_score: float,
+    min_buy_final_score: float,
+    manual_test_signal: bool,
+) -> bool:
+    if manual_test_signal or side != "buy":
+        return False
+    return final_score < max(min_buy_final_score, 0.0)
+
+
 def _runtime_state_daily_pnl_key(now: datetime | None = None) -> str:
     kst = ZoneInfo("Asia/Seoul")
     ts = now.astimezone(kst) if now else datetime.now(tz=kst)
@@ -349,6 +362,17 @@ class ExecutionService:
         except Exception as e:
             logger.warning("Failed to read manual test mode flag from Redis: %s", e)
             return False
+
+    async def _get_min_buy_final_score(self) -> float:
+        """매수 최소 final score 조회. 기본값 0.0 = 비활성."""
+        try:
+            val = await self._redis.get(MIN_BUY_FINAL_SCORE_REDIS_KEY)
+            if val is None:
+                return 0.0
+            return max(float(val.decode()), 0.0)
+        except Exception as e:
+            logger.warning("Failed to read min buy final score from Redis: %s", e)
+            return 0.0
 
     # ── 신호 폴링 루프 ──────────────────────────────────────
 
@@ -641,6 +665,7 @@ class ExecutionService:
     async def _execute_signal(self, signal: Signal):
         auto_trade_enabled = await self._is_auto_trade_enabled()
         manual_test_mode_enabled = await self._is_manual_test_mode_enabled()
+        min_buy_final_score = await self._get_min_buy_final_score()
         manual_test_signal = _is_manual_test_signal(signal.strategy_id)
 
         if not _can_execute_signal(
@@ -658,6 +683,21 @@ class ExecutionService:
             return  # 상태 "new" 유지 → 재활성화 시 재처리
 
         # ── 최소 수익 임계값 확인 (수수료 보전) ─────────────
+        if _is_buy_signal_below_final_score_threshold(
+            side=signal.side,
+            final_score=signal.final_score,
+            min_buy_final_score=min_buy_final_score,
+            manual_test_signal=manual_test_signal,
+        ):
+            async with self.session_factory() as db:
+                await self._update_signal_status(
+                    db,
+                    signal,
+                    "rejected",
+                    f"Final score {signal.final_score:.2f} < minimum {min_buy_final_score:.2f}",
+                )
+            return
+
         expected_profit = abs(signal.final_score) * 0.02
         if (not manual_test_signal) and expected_profit < MIN_PROFIT_THRESHOLD:
             async with self.session_factory() as db:

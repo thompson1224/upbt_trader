@@ -8,6 +8,7 @@ from apps.execution_service.main import (
     _extract_exchange_position_rows,
     _extract_total_krw_balance,
     _filter_new_trades,
+    _is_buy_signal_below_final_score_threshold,
     _is_manual_test_signal,
     _position_management_key,
     _resolve_manual_test_qty,
@@ -140,6 +141,27 @@ def test_manual_test_signal_helpers():
         auto_trade_enabled=False,
         manual_test_mode_enabled=True,
     ) is True
+
+
+def test_min_buy_final_score_only_rejects_regular_buy_signals():
+    assert _is_buy_signal_below_final_score_threshold(
+        side="buy",
+        final_score=0.55,
+        min_buy_final_score=0.60,
+        manual_test_signal=False,
+    ) is True
+    assert _is_buy_signal_below_final_score_threshold(
+        side="buy",
+        final_score=0.55,
+        min_buy_final_score=0.60,
+        manual_test_signal=True,
+    ) is False
+    assert _is_buy_signal_below_final_score_threshold(
+        side="sell",
+        final_score=0.10,
+        min_buy_final_score=0.60,
+        manual_test_signal=False,
+    ) is False
     assert _can_execute_signal(
         strategy_id="manual-test",
         auto_trade_enabled=False,

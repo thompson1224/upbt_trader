@@ -97,6 +97,21 @@ async def test_manual_test_mode_flag_roundtrip(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_min_buy_final_score_roundtrip(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+
+    response = await settings_module.set_min_buy_final_score(
+        settings_module.MinBuyFinalScoreRequest(value=0.6)
+    )
+    current = await settings_module.get_min_buy_final_score()
+
+    assert response == {"value": 0.6}
+    assert current == {"value": 0.6}
+
+
+@pytest.mark.asyncio
 async def test_reset_loss_streak_resets_redis_and_runtime_state(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     persisted = {}

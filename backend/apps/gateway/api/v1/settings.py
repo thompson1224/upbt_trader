@@ -20,6 +20,7 @@ UPBIT_SECRET_KEY_REDIS_KEY = "secret:upbit:secret"
 AUTO_TRADE_REDIS_KEY = "auto_trade:enabled"
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
+MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
 RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
 RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
@@ -77,6 +78,10 @@ class ExternalPositionProtectionRequest(BaseModel):
 
 class ManualTestModeRequest(BaseModel):
     enabled: bool
+
+
+class MinBuyFinalScoreRequest(BaseModel):
+    value: float
 
 
 # ── Upbit API 키 ────────────────────────────────────────────
@@ -208,6 +213,38 @@ async def get_manual_test_mode():
         await r.aclose()
     enabled = (val is not None) and (val.decode() == "1")
     return {"enabled": enabled}
+
+
+@router.patch("/settings/min-buy-final-score")
+async def set_min_buy_final_score(req: MinBuyFinalScoreRequest):
+    """매수 최소 final score 설정. 기본값 0.0 = 비활성."""
+    if req.value < 0 or req.value > 1:
+        raise HTTPException(status_code=400, detail="value must be between 0 and 1")
+    normalized = round(req.value, 4)
+    r = _get_redis()
+    try:
+        await r.set(MIN_BUY_FINAL_SCORE_REDIS_KEY, str(normalized))
+    finally:
+        await r.aclose()
+    await record_audit_event(
+        event_type="min_buy_final_score_updated",
+        source="settings",
+        message=f"Minimum buy final score set to {normalized:.2f}",
+        payload={"value": normalized},
+    )
+    return {"value": normalized}
+
+
+@router.get("/settings/min-buy-final-score")
+async def get_min_buy_final_score():
+    """매수 최소 final score 조회. 키 부재 시 기본값 0.0."""
+    r = _get_redis()
+    try:
+        val = await r.get(MIN_BUY_FINAL_SCORE_REDIS_KEY)
+    finally:
+        await r.aclose()
+    value = float(val.decode()) if val is not None else 0.0
+    return {"value": value}
 
 
 @router.post("/settings/risk/reset-loss-streak")

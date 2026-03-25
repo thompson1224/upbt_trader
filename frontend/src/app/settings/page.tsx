@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const [showSecrets, setShowSecrets] = useState(false);
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
+  const [minBuyFinalScore, setMinBuyFinalScore] = useState("0.00");
   const [loadingProtection, setLoadingProtection] = useState(true);
   const [resettingLossStreak, setResettingLossStreak] = useState(false);
   const [lossStreakResetStatus, setLossStreakResetStatus] = useState<"idle" | "success" | "error">("idle");
@@ -21,6 +22,9 @@ export default function SettingsPage() {
       .getExternalPositionStopLoss()
       .then(({ enabled }) => setExternalStopLossEnabled(enabled))
       .finally(() => setLoadingProtection(false));
+    api.settings
+      .getMinBuyFinalScore()
+      .then(({ value }) => setMinBuyFinalScore(value.toFixed(2)));
   }, []);
 
   const handleSave = async () => {
@@ -33,6 +37,7 @@ export default function SettingsPage() {
         await api.settings.setGroqKey(groqKey);
       }
       await api.settings.setExternalPositionStopLoss(externalStopLossEnabled);
+      await api.settings.setMinBuyFinalScore(Number(minBuyFinalScore) || 0);
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
     } catch {
@@ -91,6 +96,30 @@ export default function SettingsPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 font-mono"
                 />
               </div>
+            </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-sky-400" />
+              <h2 className="font-semibold text-sm">최소 매수 Final Score</h2>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Final Score Threshold</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={minBuyFinalScore}
+                  onChange={(e) => setMinBuyFinalScore(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500 font-mono"
+                />
+              </div>
+              <p className="text-xs text-gray-600">
+                `buy` 신호의 `final score`가 이 값보다 낮으면 주문 전에 거절합니다. `0.00`은 비활성, 시작 추천값은 `0.60`입니다.
+              </p>
             </div>
           </section>
 

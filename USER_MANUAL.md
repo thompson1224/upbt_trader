@@ -394,10 +394,17 @@ http://localhost:3000/performance/market/KRW-BTC
 | 업비트 Access Key | 업비트 API Access Key |
 | 업비트 Secret Key | 업비트 API Secret Key |
 | Groq API 키 | `gsk_...` 형태 (console.groq.com) |
+| 최소 매수 Final Score | 이 값보다 낮은 `buy` 신호는 주문 전 거절 |
 | 외부 보유분 자동 손절 | 외부 보유 코인에 기본 손절만 허용 |
 | 연속 손실 초기화 | `loss_streak` 즉시 0으로 복구 |
 
 **보기/숨기기 토글**: 키 값 마스킹 ON/OFF
+
+**최소 매수 Final Score**:
+- 일반 `buy` 신호에만 적용
+- `0.00`이면 비활성
+- 추천 시작값은 `0.60`
+- `manual-test`와 `sell`에는 적용되지 않음
 
 **연속 손실 초기화 버튼**:
 - 리스크 가드가 `Max consecutive losses reached: 5`로 신규 매수를 막을 때 사용
@@ -812,6 +819,8 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | PATCH | `/api/v1/settings/external-position-stop-loss` | 외부 보유분 손절 ON/OFF | `enabled: bool` |
 | GET | `/api/v1/settings/manual-test-mode` | 수동 테스트 모드 상태 | — |
 | PATCH | `/api/v1/settings/manual-test-mode` | 수동 테스트 모드 ON/OFF | `enabled: bool` |
+| GET | `/api/v1/settings/min-buy-final-score` | 최소 매수 Final Score 조회 | — |
+| PATCH | `/api/v1/settings/min-buy-final-score` | 최소 매수 Final Score 설정 | `value: 0.0 ~ 1.0` |
 | POST | `/api/v1/settings/risk/reset-loss-streak` | 연속 손실 초기화 | — |
 
 ### WebSocket

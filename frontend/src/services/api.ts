@@ -154,6 +154,10 @@ export const api = {
       apiClient.patch("/settings/external-position-stop-loss", { enabled }).then((r) => r.data),
     getExternalPositionStopLoss: () =>
       apiClient.get("/settings/external-position-stop-loss").then((r) => r.data as { enabled: boolean }),
+    setMinBuyFinalScore: (value: number) =>
+      apiClient.patch("/settings/min-buy-final-score", { value }).then((r) => r.data as { value: number }),
+    getMinBuyFinalScore: () =>
+      apiClient.get("/settings/min-buy-final-score").then((r) => r.data as { value: number }),
     resetLossStreak: () =>
       apiClient.post("/settings/risk/reset-loss-streak").then((r) => r.data as {
         lossStreak: number;
