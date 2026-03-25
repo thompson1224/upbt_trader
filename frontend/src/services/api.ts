@@ -1,6 +1,6 @@
 import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
-import type { AuditEvent, PerformanceResponse, Position } from "@/types/market";
+import type { AuditEvent, MarketInfo, PerformanceResponse, Position } from "@/types/market";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -63,7 +63,7 @@ export function mapSignalData(signal: RawSignalData) {
 export const api = {
   markets: {
     list: () =>
-      apiClient.get("/markets").then((r) => r.data),
+      apiClient.get("/markets").then((r) => r.data as MarketInfo[]),
     candles: (market: string, interval = "1m", limit = 200) =>
       apiClient
         .get(`/markets/${market}/candles`, { params: { interval, limit } })
@@ -139,6 +139,11 @@ export const api = {
           } | null;
           sell_wait_reason_code: string;
           sell_wait_reason: string;
+          consecutive_hold_count: number;
+          hold_duration_minutes: number | null;
+          hold_stale: boolean;
+          hold_warning: string | null;
+          hold_stale_threshold_minutes: number;
         }>).map((pos): Position => ({
           id: pos.id,
           market: pos.market,
@@ -181,6 +186,11 @@ export const api = {
             : null,
           sellWaitReasonCode: pos.sell_wait_reason_code,
           sellWaitReason: pos.sell_wait_reason,
+          consecutiveHoldCount: pos.consecutive_hold_count,
+          holdDurationMinutes: pos.hold_duration_minutes,
+          holdStale: pos.hold_stale,
+          holdWarning: pos.hold_warning,
+          holdStaleThresholdMinutes: pos.hold_stale_threshold_minutes,
         }))
       ),
     equityCurve: (params?: { limit?: number; days?: number }) =>
@@ -229,6 +239,14 @@ export const api = {
       apiClient.patch("/settings/min-buy-final-score", { value }).then((r) => r.data as { value: number }),
     getMinBuyFinalScore: () =>
       apiClient.get("/settings/min-buy-final-score").then((r) => r.data as { value: number }),
+    setHoldStaleMinutes: (value: number) =>
+      apiClient.patch("/settings/hold-stale-minutes", { value }).then((r) => r.data as { value: number }),
+    getHoldStaleMinutes: () =>
+      apiClient.get("/settings/hold-stale-minutes").then((r) => r.data as { value: number }),
+    setExcludedMarkets: (markets: string[]) =>
+      apiClient.patch("/settings/excluded-markets", { markets }).then((r) => r.data as { markets: string[] }),
+    getExcludedMarkets: () =>
+      apiClient.get("/settings/excluded-markets").then((r) => r.data as { markets: string[] }),
     resetLossStreak: () =>
       apiClient.post("/settings/risk/reset-loss-streak").then((r) => r.data as {
         lossStreak: number;

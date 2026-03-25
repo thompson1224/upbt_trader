@@ -112,6 +112,36 @@ async def test_min_buy_final_score_roundtrip(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_hold_stale_minutes_roundtrip(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+
+    response = await settings_module.set_hold_stale_minutes(
+        settings_module.HoldStaleMinutesRequest(value=240)
+    )
+    current = await settings_module.get_hold_stale_minutes()
+
+    assert response == {"value": 240}
+    assert current == {"value": 240}
+
+
+@pytest.mark.asyncio
+async def test_excluded_markets_roundtrip(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+
+    response = await settings_module.set_excluded_markets(
+        settings_module.ExcludedMarketsRequest(markets=["krw-btc", " KRW-ETH ", ""])
+    )
+    current = await settings_module.get_excluded_markets()
+
+    assert response == {"markets": ["KRW-BTC", "KRW-ETH"]}
+    assert current == {"markets": ["KRW-BTC", "KRW-ETH"]}
+
+
+@pytest.mark.asyncio
 async def test_reset_loss_streak_resets_redis_and_runtime_state(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     persisted = {}

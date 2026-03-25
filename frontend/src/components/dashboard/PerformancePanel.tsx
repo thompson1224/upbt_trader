@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
-import type { PerformanceBreakdownRow, PerformanceResponse, PerformanceTrade } from "@/types/market";
+import type { MarketTransitionQualityRow, PerformanceBreakdownRow, PerformanceResponse, PerformanceTrade, SignalTransitionRow } from "@/types/market";
 
 const RANGE_OPTIONS = [
   { label: "7D", value: 7 },
@@ -41,6 +41,15 @@ function formatScore(value: number | null) {
     return "-";
   }
   return value.toFixed(2);
+}
+
+function formatMinutes(value: number) {
+  if (value < 60) {
+    return `${Math.round(value)}분`;
+  }
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes > 0 ? `${hours}시간 ${minutes}분` : `${hours}시간`;
 }
 
 function BreakdownList({
@@ -169,11 +178,114 @@ function RecentTradesTable({ trades }: { trades: PerformanceTrade[] }) {
   );
 }
 
+function TransitionList({ rows }: { rows: SignalTransitionRow[] }) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+        신호 전환 빈도
+      </div>
+      <div className="space-y-2">
+        {rows.length === 0 ? (
+          <div className="text-xs text-gray-600">데이터 없음</div>
+        ) : (
+          rows.slice(0, 4).map((row) => (
+            <div key={row.transition} className="flex items-center justify-between text-xs">
+              <div>
+                <div className="font-mono text-gray-200">{row.transition}</div>
+                <div className="text-gray-600">
+                  {row.count}건 · 비중 {formatPct(row.share)} · 평균 간격 {formatMinutes(row.avgGapMinutes)}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MarketTransitionQualityList({
+  rows,
+  excludedMarkets,
+  pendingMarket,
+  onToggleExcluded,
+}: {
+  rows: MarketTransitionQualityRow[];
+  excludedMarkets: string[];
+  pendingMarket: string | null;
+  onToggleExcluded: (market: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+        전환 취약 코인
+      </div>
+      <div className="space-y-2">
+        {rows.length === 0 ? (
+          <div className="text-xs text-gray-600">데이터 없음</div>
+        ) : (
+          rows.slice(0, 4).map((row) => (
+            <div key={row.market} className="flex items-center justify-between text-xs">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/performance/market/${row.market}`}
+                    className="font-mono text-sky-300 hover:text-sky-200"
+                  >
+                    {row.market}
+                  </Link>
+                  {excludedMarkets.includes(row.market) && (
+                    <span className="rounded bg-red-950 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-red-300">
+                      excluded
+                    </span>
+                  )}
+                </div>
+                <div className="text-gray-600">
+                  hold→sell {formatPct(row.holdToSellRate)} · hold→hold {formatPct(row.holdToHoldRate)}
+                </div>
+              </div>
+              <div className="text-right text-[11px] text-gray-500">
+                <div>hold 시작 {row.holdOriginCount}건</div>
+                <div>전체 전환 {row.totalTransitions}건</div>
+                <button
+                  type="button"
+                  onClick={() => onToggleExcluded(row.market)}
+                  disabled={pendingMarket === row.market}
+                  className={cn(
+                    "mt-2 rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition",
+                    excludedMarkets.includes(row.market)
+                      ? "border-emerald-700 text-emerald-300 hover:border-emerald-500"
+                      : "border-red-700 text-red-300 hover:border-red-500",
+                    pendingMarket === row.market && "opacity-50"
+                  )}
+                >
+                  {pendingMarket === row.market
+                    ? "저장 중"
+                    : excludedMarkets.includes(row.market)
+                      ? "복귀"
+                      : "제외"}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PerformancePanel() {
   const [days, setDays] = useState<number | null>(30);
+  const [pendingMarket, setPendingMarket] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<PerformanceResponse>({
     queryKey: ["portfolio-performance", days],
     queryFn: () => api.portfolio.performance({ limit: 100, days: days ?? undefined }),
+    refetchInterval: 30_000,
+  });
+  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+    queryKey: ["excluded-markets"],
+    queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
   });
 
@@ -191,7 +303,26 @@ export default function PerformancePanel() {
   const byFinalScoreBand = data?.byFinalScoreBand ?? [];
   const bySentimentBand = data?.bySentimentBand ?? [];
   const byHourBlock = data?.byHourBlock ?? [];
+  const byTransition = data?.byTransition ?? [];
+  const byMarketTransitionQuality = data?.byMarketTransitionQuality ?? [];
+  const excludedMarkets = excludedMarketState?.markets ?? [];
   const trades = data?.trades ?? [];
+
+  const handleToggleExcluded = async (market: string) => {
+    const nextMarkets = excludedMarkets.includes(market)
+      ? excludedMarkets.filter((item) => item !== market)
+      : [...excludedMarkets, market].sort();
+    setPendingMarket(market);
+    try {
+      await api.settings.setExcludedMarkets(nextMarkets);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["excluded-markets"] }),
+        queryClient.invalidateQueries({ queryKey: ["portfolio-performance"] }),
+      ]);
+    } finally {
+      setPendingMarket(null);
+    }
+  };
 
   if (!summary || summary.totalTrades === 0) {
     return (
@@ -272,7 +403,7 @@ export default function PerformancePanel() {
       </div>
 
       <div className="grid flex-1 grid-rows-[auto_1fr] gap-3 p-3">
-        <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
+        <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
           <div className="grid grid-cols-2 gap-3">
             {summaryCards.map((card) => {
               const Icon = card.icon;
@@ -300,6 +431,13 @@ export default function PerformancePanel() {
           <BreakdownList title="Final Score 구간" rows={byFinalScoreBand} keyName="scoreBand" />
           <BreakdownList title="감성 점수 구간" rows={bySentimentBand} keyName="sentimentBand" />
           <BreakdownList title="시간대별 성과" rows={byHourBlock} keyName="hourBlock" />
+          <TransitionList rows={byTransition} />
+          <MarketTransitionQualityList
+            rows={byMarketTransitionQuality}
+            excludedMarkets={excludedMarkets}
+            pendingMarket={pendingMarket}
+            onToggleExcluded={handleToggleExcluded}
+          />
         </div>
 
         <RecentTradesTable trades={trades} />

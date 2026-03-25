@@ -1,4 +1,6 @@
 "use client";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
 
@@ -11,6 +13,12 @@ export default function MarketWatchlist() {
   const tickers = useMarketStore((s) => s.tickers);
   const selectedMarket = useMarketStore((s) => s.selectedMarket);
   const setSelectedMarket = useMarketStore((s) => s.setSelectedMarket);
+  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+    queryKey: ["excluded-markets"],
+    queryFn: () => api.settings.getExcludedMarkets(),
+    refetchInterval: 30_000,
+  });
+  const excludedMarkets = excludedMarketState?.markets ?? [];
 
   return (
     <div className="flex flex-col h-full">
@@ -33,8 +41,13 @@ export default function MarketWatchlist() {
                 isSelected && "bg-emerald-500/5 border-l-2 border-l-emerald-500"
               )}
             >
-              <span className="font-mono text-gray-300">
-                {market.replace("KRW-", "")}
+              <span className="flex items-center gap-2 font-mono text-gray-300">
+                <span>{market.replace("KRW-", "")}</span>
+                {excludedMarkets.includes(market) && (
+                  <span className="rounded px-1 py-0.5 text-[10px] uppercase tracking-wide bg-red-950 text-red-300">
+                    ex
+                  </span>
+                )}
               </span>
               {ticker ? (
                 <div className="text-right">

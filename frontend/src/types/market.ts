@@ -11,6 +11,16 @@ export interface TickerData {
   timestamp: number;
 }
 
+export interface MarketInfo {
+  id: number;
+  market: string;
+  base_currency: string;
+  quote_currency: string;
+  is_active: boolean;
+  market_warning: string | null;
+  excluded: boolean;
+}
+
 export interface CandleData {
   ts: string;
   open: number;
@@ -78,6 +88,11 @@ export interface Position {
   } | null;
   sellWaitReasonCode: string;
   sellWaitReason: string;
+  consecutiveHoldCount: number;
+  holdDurationMinutes: number | null;
+  holdStale: boolean;
+  holdWarning: string | null;
+  holdStaleThresholdMinutes: number;
 }
 
 export interface EquityCurvePoint {
@@ -145,6 +160,24 @@ export interface PerformanceBreakdownRow {
   netPnl: number;
 }
 
+export interface SignalTransitionRow {
+  transition: string;
+  count: number;
+  share: number;
+  avgGapMinutes: number;
+}
+
+export interface MarketTransitionQualityRow {
+  market: string;
+  totalTransitions: number;
+  holdOriginCount: number;
+  holdToSellCount: number;
+  holdToHoldCount: number;
+  holdToBuyCount: number;
+  holdToSellRate: number;
+  holdToHoldRate: number;
+}
+
 export interface PerformanceTrade {
   market: string;
   entryTs: string;
@@ -173,5 +206,7 @@ export interface PerformanceResponse {
   byFinalScoreBand: PerformanceBreakdownRow[];
   bySentimentBand: PerformanceBreakdownRow[];
   byHourBlock: PerformanceBreakdownRow[];
+  byTransition: SignalTransitionRow[];
+  byMarketTransitionQuality: MarketTransitionQualityRow[];
   trades: PerformanceTrade[];
 }

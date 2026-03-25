@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/services/api";
+import type { MarketInfo } from "@/types/market";
 import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert, RotateCcw } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
@@ -13,6 +14,9 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
   const [minBuyFinalScore, setMinBuyFinalScore] = useState("0.00");
+  const [holdStaleMinutes, setHoldStaleMinutes] = useState("180");
+  const [markets, setMarkets] = useState<MarketInfo[]>([]);
+  const [excludedMarkets, setExcludedMarkets] = useState<string[]>([]);
   const [loadingProtection, setLoadingProtection] = useState(true);
   const [resettingLossStreak, setResettingLossStreak] = useState(false);
   const [lossStreakResetStatus, setLossStreakResetStatus] = useState<"idle" | "success" | "error">("idle");
@@ -25,6 +29,11 @@ export default function SettingsPage() {
     api.settings
       .getMinBuyFinalScore()
       .then(({ value }) => setMinBuyFinalScore(value.toFixed(2)));
+    api.settings
+      .getHoldStaleMinutes()
+      .then(({ value }) => setHoldStaleMinutes(String(value)));
+    api.markets.list().then(setMarkets);
+    api.settings.getExcludedMarkets().then(({ markets }) => setExcludedMarkets(markets));
   }, []);
 
   const handleSave = async () => {
@@ -38,6 +47,8 @@ export default function SettingsPage() {
       }
       await api.settings.setExternalPositionStopLoss(externalStopLossEnabled);
       await api.settings.setMinBuyFinalScore(Number(minBuyFinalScore) || 0);
+      await api.settings.setHoldStaleMinutes(Number(holdStaleMinutes) || 180);
+      await api.settings.setExcludedMarkets(excludedMarkets);
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
     } catch {
@@ -59,6 +70,14 @@ export default function SettingsPage() {
     } finally {
       setResettingLossStreak(false);
     }
+  };
+
+  const toggleExcludedMarket = (market: string) => {
+    setExcludedMarkets((current) =>
+      current.includes(market)
+        ? current.filter((item) => item !== market)
+        : [...current, market].sort()
+    );
   };
 
   return (
@@ -120,6 +139,61 @@ export default function SettingsPage() {
               <p className="text-xs text-gray-600">
                 `buy` 신호의 `final score`가 이 값보다 낮으면 주문 전에 거절합니다. `0.00`은 비활성, 시작 추천값은 `0.60`입니다.
               </p>
+            </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-amber-300" />
+              <h2 className="font-semibold text-sm">장기 Hold 경고 기준</h2>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Hold Stale Threshold (minutes)</label>
+                <input
+                  type="number"
+                  min="30"
+                  max="1440"
+                  step="10"
+                  value={holdStaleMinutes}
+                  onChange={(e) => setHoldStaleMinutes(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400 font-mono"
+                />
+              </div>
+              <p className="text-xs text-gray-600">
+                보유 포지션에서 `hold`가 이 시간 이상 연속되면 대시보드와 상세 화면에 장기 관망 경고를 표시합니다. 기본값은 `180`분입니다.
+              </p>
+            </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-red-300" />
+              <h2 className="font-semibold text-sm">자동매매 제외 코인</h2>
+            </div>
+            <div className="mb-3 text-xs text-gray-600">
+              체크한 코인은 전략 서비스가 신호 생성 대상에서 제외합니다.
+            </div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {markets.map((market) => {
+                const checked = excludedMarkets.includes(market.market);
+                return (
+                  <label
+                    key={market.market}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      checked ? "border-red-500/50 bg-red-950/30 text-red-200" : "border-gray-800 bg-gray-950/40 text-gray-300"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleExcludedMarket(market.market)}
+                      className="accent-red-500"
+                    />
+                    <span className="font-mono">{market.market}</span>
+                  </label>
+                );
+              })}
             </div>
           </section>
 

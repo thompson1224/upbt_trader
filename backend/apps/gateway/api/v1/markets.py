@@ -3,12 +3,21 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import json
+import os
+import redis.asyncio as aioredis
 
 from libs.db.session import get_db
 from libs.db.models import Coin, Candle1m
 from schemas.market import CoinResponse, CandleResponse
 
 router = APIRouter()
+EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
+
+
+def _get_redis():
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    return aioredis.from_url(redis_url)
 
 
 @router.get("/markets", response_model=list[CoinResponse])
@@ -22,7 +31,19 @@ async def get_markets(
         stmt = stmt.where(Coin.is_active == True)
     stmt = stmt.order_by(Coin.market)
     result = await db.execute(stmt)
-    return result.scalars().all()
+    markets = result.scalars().all()
+
+    r = _get_redis()
+    try:
+        raw = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
+    finally:
+        await r.aclose()
+    excluded = set(json.loads(raw.decode())) if raw is not None else set()
+
+    return [
+        CoinResponse.model_validate(coin).model_copy(update={"excluded": coin.market in excluded})
+        for coin in markets
+    ]
 
 
 @router.get("/markets/{market}/candles", response_model=list[CandleResponse])

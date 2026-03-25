@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     risk_max_single_trade_pct: float = 0.01
     risk_default_stop_loss_pct: float = 0.03
     risk_default_take_profit_pct: float = 0.06
+    risk_hold_stale_minutes: int = 180
 
     # WebSocket
     ws_reconnect_min_sec: float = 1.0

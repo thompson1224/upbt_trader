@@ -10,6 +10,7 @@ class CoinResponse(BaseModel):
     quote_currency: str
     is_active: bool
     market_warning: Optional[str]
+    excluded: bool = False
 
     model_config = {"from_attributes": True}
 

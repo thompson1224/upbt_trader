@@ -1,5 +1,6 @@
 from __future__ import annotations
 """API 키 및 자동매매 설정 관리"""
+import json
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
 from libs.audit import record_audit_event
+from libs.config import get_settings
 from libs.db.models import RuntimeState
 from libs.db.session import get_session_factory
 
@@ -21,6 +23,8 @@ AUTO_TRADE_REDIS_KEY = "auto_trade:enabled"
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
 MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
+HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
+EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
 RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
 RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
@@ -82,6 +86,14 @@ class ManualTestModeRequest(BaseModel):
 
 class MinBuyFinalScoreRequest(BaseModel):
     value: float
+
+
+class HoldStaleMinutesRequest(BaseModel):
+    value: int
+
+
+class ExcludedMarketsRequest(BaseModel):
+    markets: list[str]
 
 
 # ── Upbit API 키 ────────────────────────────────────────────
@@ -245,6 +257,72 @@ async def get_min_buy_final_score():
         await r.aclose()
     value = float(val.decode()) if val is not None else 0.0
     return {"value": value}
+
+
+@router.patch("/settings/hold-stale-minutes")
+async def set_hold_stale_minutes(req: HoldStaleMinutesRequest):
+    """장기 hold 경고 기준(분) 설정."""
+    if req.value < 30 or req.value > 1440:
+        raise HTTPException(status_code=400, detail="value must be between 30 and 1440")
+    normalized = int(req.value)
+    r = _get_redis()
+    try:
+        await r.set(HOLD_STALE_MINUTES_REDIS_KEY, str(normalized))
+    finally:
+        await r.aclose()
+    await record_audit_event(
+        event_type="hold_stale_minutes_updated",
+        source="settings",
+        message=f"Hold stale threshold set to {normalized} minutes",
+        payload={"value": normalized},
+    )
+    return {"value": normalized}
+
+
+@router.get("/settings/hold-stale-minutes")
+async def get_hold_stale_minutes():
+    """장기 hold 경고 기준 조회. 키 부재 시 환경 기본값 사용."""
+    r = _get_redis()
+    try:
+        val = await r.get(HOLD_STALE_MINUTES_REDIS_KEY)
+    finally:
+        await r.aclose()
+    if val is not None:
+        return {"value": int(val.decode())}
+    return {"value": int(get_settings().risk_hold_stale_minutes)}
+
+
+@router.patch("/settings/excluded-markets")
+async def set_excluded_markets(req: ExcludedMarketsRequest):
+    normalized = sorted({
+        market.strip().upper()
+        for market in req.markets
+        if isinstance(market, str) and market.strip()
+    })
+    r = _get_redis()
+    try:
+        await r.set(EXCLUDED_MARKETS_REDIS_KEY, json.dumps(normalized))
+    finally:
+        await r.aclose()
+    await record_audit_event(
+        event_type="excluded_markets_updated",
+        source="settings",
+        message=f"Excluded markets updated ({len(normalized)} markets)",
+        payload={"markets": normalized},
+    )
+    return {"markets": normalized}
+
+
+@router.get("/settings/excluded-markets")
+async def get_excluded_markets():
+    r = _get_redis()
+    try:
+        val = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
+    finally:
+        await r.aclose()
+    if val is None:
+        return {"markets": []}
+    return {"markets": json.loads(val.decode())}
 
 
 @router.post("/settings/risk/reset-loss-streak")

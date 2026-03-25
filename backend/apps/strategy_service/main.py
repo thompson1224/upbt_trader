@@ -27,6 +27,7 @@ STRATEGY_ID = "hybrid_v1"
 TIMEFRAME = "1m"
 CANDLE_WINDOW = 200          # 지표 계산에 필요한 캔들 수
 TOP_MARKETS_BY_VOLUME = 10   # 24h 거래량 상위 N개 코인만 처리
+EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
 
 # 1시간봉 추세 필터: EMA12/EMA30 비율 기준
 HOURLY_CANDLES = 60          # 1분봉 60개 = 1시간
@@ -95,6 +96,18 @@ class StrategyRunner:
         self._redis = aioredis.from_url(self._redis_url)
         return self._redis
 
+    async def _get_excluded_markets(self) -> set[str]:
+        r = await self._get_redis()
+        raw = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
+        if raw is None:
+            return set()
+        try:
+            decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
+            return {market.upper() for market in json.loads(decoded)}
+        except Exception:
+            logger.warning("Invalid excluded market payload, ignoring")
+            return set()
+
     async def run(self):
         logger.info("Strategy service started. strategy=%s", STRATEGY_ID)
         while True:
@@ -105,6 +118,7 @@ class StrategyRunner:
             await asyncio.sleep(60)  # 1분 주기
 
     async def _process_all_markets(self):
+        excluded_markets = await self._get_excluded_markets()
         async with self.session_factory() as db:
             cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
             vol_subq = (
@@ -124,9 +138,16 @@ class StrategyRunner:
                 .where(Coin.is_active == True)
                 .order_by(desc(vol_subq.c.vol_24h))
             )
-            coins = result.scalars().all()
+            coins = [
+                coin for coin in result.scalars().all()
+                if coin.market not in excluded_markets
+            ]
 
-        logger.info("Processing top %d markets by 24h volume", len(coins))
+        logger.info(
+            "Processing top %d markets by 24h volume (excluded=%d)",
+            len(coins),
+            len(excluded_markets),
+        )
 
         # Fear & Greed는 전 코인 공통 (하루 1회 업데이트, 1시간 캐시)
         sentiment_score, sentiment_conf = await self.fear_greed.get_sentiment()

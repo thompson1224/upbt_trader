@@ -27,6 +27,7 @@ POSITION_SOURCE_STRATEGY = "strategy"
 POSITION_SOURCE_EXTERNAL = "external"
 POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
 KST = timezone(timedelta(hours=9))
+HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
 
 
 class PositionAutoTradeRequest(BaseModel):
@@ -40,6 +41,17 @@ def _get_redis():
 
 def _position_management_key(coin_id: int) -> str:
     return f"{POSITION_SOURCE_OVERRIDE_KEY_PREFIX}{coin_id}"
+
+
+async def _get_hold_stale_minutes() -> int:
+    r = _get_redis()
+    try:
+        val = await r.get(HOLD_STALE_MINUTES_REDIS_KEY)
+    finally:
+        await r.aclose()
+    if val is not None:
+        return int(val.decode())
+    return int(get_settings().risk_hold_stale_minutes)
 
 
 def _performance_cache_key(limit: int, days: Optional[int], market: Optional[str]) -> str:
@@ -367,6 +379,88 @@ def _group_hour_block_performance(trades: list[dict]) -> list[dict]:
     return rows
 
 
+def _group_signal_transitions(signals: list[Signal]) -> list[dict]:
+    grouped_by_coin: dict[int, list[Signal]] = defaultdict(list)
+    for signal in signals:
+        grouped_by_coin[signal.coin_id].append(signal)
+
+    transition_counts: dict[str, int] = defaultdict(int)
+    transition_gaps: dict[str, list[float]] = defaultdict(list)
+    total_transitions = 0
+
+    for coin_signals in grouped_by_coin.values():
+        ordered = sorted(coin_signals, key=lambda signal: signal.ts)
+        for previous, current in zip(ordered, ordered[1:]):
+            label = f"{previous.side}->{current.side}"
+            transition_counts[label] += 1
+            transition_gaps[label].append(
+                max((current.ts - previous.ts).total_seconds() / 60.0, 0.0)
+            )
+            total_transitions += 1
+
+    rows = []
+    for transition, count in transition_counts.items():
+        gaps = transition_gaps[transition]
+        rows.append(
+            {
+                "transition": transition,
+                "count": count,
+                "share": (count / total_transitions) if total_transitions else 0.0,
+                "avgGapMinutes": (sum(gaps) / len(gaps)) if gaps else 0.0,
+            }
+        )
+
+    rows.sort(key=lambda row: (-row["count"], row["transition"]))
+    return rows
+
+
+def _group_market_transition_quality(signal_rows: list[dict]) -> list[dict]:
+    grouped_by_market: dict[str, list[dict]] = defaultdict(list)
+    for row in signal_rows:
+        grouped_by_market[row["market"]].append(row)
+
+    rows = []
+    for market, items in grouped_by_market.items():
+        ordered = sorted(items, key=lambda item: item["ts"])
+        transition_counts: dict[str, int] = defaultdict(int)
+        total_transitions = 0
+
+        for previous, current in zip(ordered, ordered[1:]):
+            label = f"{previous['side']}->{current['side']}"
+            transition_counts[label] += 1
+            total_transitions += 1
+
+        hold_origin_count = sum(
+            count for label, count in transition_counts.items() if label.startswith("hold->")
+        )
+        hold_to_sell_count = transition_counts.get("hold->sell", 0)
+        hold_to_hold_count = transition_counts.get("hold->hold", 0)
+        hold_to_buy_count = transition_counts.get("hold->buy", 0)
+
+        rows.append(
+            {
+                "market": market,
+                "totalTransitions": total_transitions,
+                "holdOriginCount": hold_origin_count,
+                "holdToSellCount": hold_to_sell_count,
+                "holdToHoldCount": hold_to_hold_count,
+                "holdToBuyCount": hold_to_buy_count,
+                "holdToSellRate": (hold_to_sell_count / hold_origin_count) if hold_origin_count else 0.0,
+                "holdToHoldRate": (hold_to_hold_count / hold_origin_count) if hold_origin_count else 0.0,
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            row["holdToSellRate"] if row["holdOriginCount"] else 1.0,
+            -(row["holdToHoldRate"]),
+            -(row["holdOriginCount"]),
+            row["market"],
+        )
+    )
+    return rows
+
+
 def _serialize_signal(signal: Signal | None) -> dict | None:
     if signal is None:
         return None
@@ -461,8 +555,41 @@ def _describe_sell_wait_reason(
     )
 
 
+def _compute_hold_streak(
+    signals: list[Signal],
+    *,
+    threshold_minutes: int,
+) -> tuple[int, float | None, bool, str | None]:
+    if not signals or signals[0].side != "hold":
+        return 0, None, False, None
+
+    streak_signals: list[Signal] = []
+    for signal in signals:
+        if signal.side != "hold":
+            break
+        streak_signals.append(signal)
+
+    if not streak_signals:
+        return 0, None, False, None
+
+    oldest_hold = streak_signals[-1]
+    duration_minutes = max(
+        (datetime.now(tz=timezone.utc) - oldest_hold.ts).total_seconds() / 60.0,
+        0.0,
+    )
+    is_stale = duration_minutes >= threshold_minutes
+    warning = None
+    if is_stale:
+        warning = (
+            f"최근 {len(streak_signals)}개 신호가 연속 hold 입니다. "
+            f"약 {int(round(duration_minutes))}분째 관망 중입니다."
+        )
+    return len(streak_signals), duration_minutes, is_stale, warning
+
+
 @router.get("/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
+    hold_stale_minutes = await _get_hold_stale_minutes()
     stmt = select(Position, Coin.market, Coin.id).join(Coin)
     result = await db.execute(stmt)
     rows = result.all()
@@ -478,7 +605,9 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
     )
     latest_signal_by_coin_id: dict[int, Signal] = {}
     latest_sell_signal_by_coin_id: dict[int, Signal] = {}
+    signals_by_coin_id: dict[int, list[Signal]] = defaultdict(list)
     for signal in signal_result.scalars():
+        signals_by_coin_id[signal.coin_id].append(signal)
         latest_signal_by_coin_id.setdefault(signal.coin_id, signal)
         if signal.side == "sell":
             latest_sell_signal_by_coin_id.setdefault(signal.coin_id, signal)
@@ -487,12 +616,17 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
     for pos, market, coin_id in active_rows:
         latest_signal = latest_signal_by_coin_id.get(coin_id)
         latest_sell_signal = latest_sell_signal_by_coin_id.get(coin_id)
+        coin_signals = signals_by_coin_id.get(coin_id, [])
         current_price = _estimate_current_price(pos)
         reason_code, reason_text = _describe_sell_wait_reason(
             pos,
             latest_signal,
             latest_sell_signal,
             current_price,
+        )
+        hold_count, hold_duration_minutes, hold_is_stale, hold_warning = _compute_hold_streak(
+            coin_signals,
+            threshold_minutes=hold_stale_minutes,
         )
         payload.append(
             {
@@ -513,6 +647,11 @@ async def get_positions(db: AsyncSession = Depends(get_db)):
                 "latest_sell_signal": _serialize_signal(latest_sell_signal),
                 "sell_wait_reason_code": reason_code,
                 "sell_wait_reason": reason_text,
+                "consecutive_hold_count": hold_count,
+                "hold_duration_minutes": hold_duration_minutes,
+                "hold_stale": hold_is_stale,
+                "hold_warning": hold_warning,
+                "hold_stale_threshold_minutes": hold_stale_minutes,
             }
         )
     return payload
@@ -670,6 +809,29 @@ async def get_portfolio_performance(
         for fill, order, market, signal in rows
     ]
 
+    signal_stmt = (
+        select(Signal, Coin.market)
+        .join(Coin, Signal.coin_id == Coin.id)
+        .order_by(Signal.coin_id.asc(), Signal.ts.asc())
+    )
+    if days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        signal_stmt = signal_stmt.where(Signal.ts >= cutoff)
+    if normalized_market is not None:
+        signal_stmt = (
+            select(Signal, Coin.market)
+            .join(Coin, Signal.coin_id == Coin.id)
+            .where(Coin.market == normalized_market)
+            .order_by(Signal.coin_id.asc(), Signal.ts.asc())
+        )
+        if days is not None:
+            signal_stmt = signal_stmt.where(Signal.ts >= cutoff)
+    signal_result = await db.execute(signal_stmt)
+    signal_rows = [
+        {"signal": signal, "market": market, "ts": signal.ts, "side": signal.side}
+        for signal, market in signal_result.all()
+    ]
+
     trades = _build_closed_trades(fill_rows)
     if days is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -687,6 +849,8 @@ async def get_portfolio_performance(
         "byFinalScoreBand": _group_score_band_performance(trades),
         "bySentimentBand": _group_sentiment_band_performance(trades),
         "byHourBlock": _group_hour_block_performance(trades),
+        "byTransition": _group_signal_transitions([row["signal"] for row in signal_rows]),
+        "byMarketTransitionQuality": _group_market_transition_quality(signal_rows),
         "trades": trades,
     }
     redis_client = None

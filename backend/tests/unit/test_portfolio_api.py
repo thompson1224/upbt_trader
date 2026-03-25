@@ -205,7 +205,7 @@ async def test_set_position_auto_trade_promotes_external_position(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
+async def test_get_positions_includes_latest_signal_and_sell_wait_reason(monkeypatch: pytest.MonkeyPatch):
     coin = Coin(
         id=42,
         market="KRW-DOGE",
@@ -252,6 +252,8 @@ async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
                 )
             raise AssertionError(f"Unexpected entity: {entity}")
 
+    monkeypatch.setattr(portfolio_module, "_get_hold_stale_minutes", lambda: _awaitable(180))
+
     response = await portfolio_module.get_positions(db=_PositionsDB())
 
     assert len(response) == 1
@@ -265,10 +267,104 @@ async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
     assert response[0]["latest_sell_signal"] is None
     assert response[0]["sell_wait_reason_code"] == "hold_signal"
     assert "hold" in response[0]["sell_wait_reason"]
+    assert response[0]["hold_stale_threshold_minutes"] == 180
 
 
 @pytest.mark.asyncio
-async def test_get_positions_prefers_latest_sell_signal_reason_over_latest_general_signal():
+async def test_get_positions_includes_hold_stale_warning(monkeypatch: pytest.MonkeyPatch):
+    coin = Coin(
+        id=77,
+        market="KRW-ADA",
+        base_currency="ADA",
+        quote_currency="KRW",
+        is_active=True,
+        market_warning=None,
+    )
+    position = Position(
+        id=12,
+        coin_id=77,
+        qty=10.0,
+        avg_entry_price=1000.0,
+        unrealized_pnl=100.0,
+        realized_pnl=0.0,
+        source="strategy",
+        stop_loss=970.0,
+        take_profit=1060.0,
+    )
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 3, 25, 12, 0, tzinfo=tz or timezone.utc)
+
+    hold_signals = [
+        portfolio_module.Signal(
+            id=201,
+            strategy_id="hybrid_v1",
+            coin_id=coin.id,
+            timeframe="1m",
+            ts=datetime(2026, 3, 25, 11, 59, tzinfo=timezone.utc),
+            ta_score=0.11,
+            sentiment_score=0.20,
+            final_score=0.18,
+            confidence=0.71,
+            side="hold",
+            status="executed",
+            rejection_reason="held_position_hold",
+        ),
+        portfolio_module.Signal(
+            id=202,
+            strategy_id="hybrid_v1",
+            coin_id=coin.id,
+            timeframe="1m",
+            ts=datetime(2026, 3, 25, 8, 0, tzinfo=timezone.utc),
+            ta_score=0.08,
+            sentiment_score=0.18,
+            final_score=0.15,
+            confidence=0.69,
+            side="hold",
+            status="executed",
+            rejection_reason="held_position_hold",
+        ),
+        portfolio_module.Signal(
+            id=203,
+            strategy_id="hybrid_v1",
+            coin_id=coin.id,
+            timeframe="1m",
+            ts=datetime(2026, 3, 25, 7, 59, tzinfo=timezone.utc),
+            ta_score=0.22,
+            sentiment_score=0.30,
+            final_score=0.28,
+            confidence=0.80,
+            side="buy",
+            status="executed",
+            rejection_reason=None,
+        ),
+    ]
+
+    class _PositionsDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is Position:
+                return _FakeRowsResult([(position, coin.market, coin.id)])
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult(hold_signals)
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+    monkeypatch.setattr(portfolio_module, "datetime", _FrozenDateTime)
+    monkeypatch.setattr(portfolio_module, "_get_hold_stale_minutes", lambda: _awaitable(180))
+
+    response = await portfolio_module.get_positions(db=_PositionsDB())
+
+    assert response[0]["consecutive_hold_count"] == 2
+    assert response[0]["hold_stale"] is True
+    assert response[0]["hold_duration_minutes"] == pytest.approx(240.0)
+    assert "연속 hold" in response[0]["hold_warning"]
+    assert response[0]["hold_stale_threshold_minutes"] == 180
+
+
+@pytest.mark.asyncio
+async def test_get_positions_prefers_latest_sell_signal_reason_over_latest_general_signal(monkeypatch: pytest.MonkeyPatch):
     coin = Coin(
         id=99,
         market="KRW-SOL",
@@ -326,6 +422,8 @@ async def test_get_positions_prefers_latest_sell_signal_reason_over_latest_gener
             if entity is portfolio_module.Signal:
                 return _FakeRowsResult([newer_hold_signal, sell_signal])
             raise AssertionError(f"Unexpected entity: {entity}")
+
+    monkeypatch.setattr(portfolio_module, "_get_hold_stale_minutes", lambda: _awaitable(180))
 
     response = await portfolio_module.get_positions(db=_PositionsDB())
 
@@ -433,6 +531,105 @@ def test_summarize_performance_computes_profit_factor_and_drawdown():
     assert by_hour_block[2]["netPnl"] == pytest.approx(2.0)
 
 
+def test_group_signal_transitions_aggregates_coin_sequences():
+    rows = portfolio_module._group_signal_transitions(
+        [
+            portfolio_module.Signal(
+                id=1,
+                strategy_id="hybrid_v1",
+                coin_id=1,
+                timeframe="1m",
+                ts=datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
+                ta_score=0.3,
+                sentiment_score=0.1,
+                final_score=0.2,
+                confidence=0.8,
+                side="buy",
+                status="executed",
+            ),
+            portfolio_module.Signal(
+                id=2,
+                strategy_id="hybrid_v1",
+                coin_id=1,
+                timeframe="1m",
+                ts=datetime(2026, 3, 25, 0, 10, tzinfo=timezone.utc),
+                ta_score=0.1,
+                sentiment_score=0.0,
+                final_score=0.1,
+                confidence=0.8,
+                side="hold",
+                status="executed",
+            ),
+            portfolio_module.Signal(
+                id=3,
+                strategy_id="hybrid_v1",
+                coin_id=1,
+                timeframe="1m",
+                ts=datetime(2026, 3, 25, 0, 25, tzinfo=timezone.utc),
+                ta_score=-0.2,
+                sentiment_score=0.0,
+                final_score=-0.1,
+                confidence=0.8,
+                side="sell",
+                status="new",
+            ),
+            portfolio_module.Signal(
+                id=4,
+                strategy_id="hybrid_v1",
+                coin_id=2,
+                timeframe="1m",
+                ts=datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc),
+                ta_score=0.3,
+                sentiment_score=0.1,
+                final_score=0.2,
+                confidence=0.8,
+                side="buy",
+                status="executed",
+            ),
+            portfolio_module.Signal(
+                id=5,
+                strategy_id="hybrid_v1",
+                coin_id=2,
+                timeframe="1m",
+                ts=datetime(2026, 3, 25, 1, 5, tzinfo=timezone.utc),
+                ta_score=0.1,
+                sentiment_score=0.0,
+                final_score=0.1,
+                confidence=0.8,
+                side="hold",
+                status="executed",
+            ),
+        ]
+    )
+
+    assert rows[0]["transition"] == "buy->hold"
+    assert rows[0]["count"] == 2
+    assert rows[0]["share"] == pytest.approx(2 / 3)
+    assert rows[0]["avgGapMinutes"] == pytest.approx(7.5)
+    assert rows[1]["transition"] == "hold->sell"
+    assert rows[1]["count"] == 1
+
+
+def test_group_market_transition_quality_flags_hold_heavy_markets():
+    rows = portfolio_module._group_market_transition_quality(
+        [
+            {"market": "KRW-BTC", "side": "buy", "ts": datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc)},
+            {"market": "KRW-BTC", "side": "hold", "ts": datetime(2026, 3, 25, 0, 10, tzinfo=timezone.utc)},
+            {"market": "KRW-BTC", "side": "hold", "ts": datetime(2026, 3, 25, 0, 20, tzinfo=timezone.utc)},
+            {"market": "KRW-BTC", "side": "sell", "ts": datetime(2026, 3, 25, 0, 35, tzinfo=timezone.utc)},
+            {"market": "KRW-ETH", "side": "buy", "ts": datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc)},
+            {"market": "KRW-ETH", "side": "hold", "ts": datetime(2026, 3, 25, 1, 10, tzinfo=timezone.utc)},
+            {"market": "KRW-ETH", "side": "hold", "ts": datetime(2026, 3, 25, 1, 20, tzinfo=timezone.utc)},
+        ]
+    )
+
+    assert rows[0]["market"] == "KRW-ETH"
+    assert rows[0]["holdToSellRate"] == pytest.approx(0.0)
+    assert rows[0]["holdToHoldRate"] == pytest.approx(1.0)
+    assert rows[1]["market"] == "KRW-BTC"
+    assert rows[1]["holdToSellRate"] == pytest.approx(0.5)
+
+
 @pytest.mark.asyncio
 async def test_get_portfolio_performance_reads_from_cache(monkeypatch: pytest.MonkeyPatch):
     cached_payload = {
@@ -476,7 +673,9 @@ async def test_get_portfolio_performance_caches_and_separates_tp_reason(monkeypa
     coin_market = "KRW-BTC"
     buy_signal = SimpleNamespace(
         id=1,
+        coin_id=1,
         strategy_id="hybrid_v1",
+        ts=datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
         ta_score=0.4,
         sentiment_score=0.3,
         final_score=0.36,
@@ -488,14 +687,19 @@ async def test_get_portfolio_performance_caches_and_separates_tp_reason(monkeypa
         def __init__(self):
             self.calls = 0
 
-        async def execute(self, _statement):
+        async def execute(self, statement):
             self.calls += 1
-            return _FakeRowsResult(
-                [
-                    (buy_fill, buy_order, coin_market, buy_signal),
-                    (sell_fill, sell_order, coin_market, None),
-                ]
-            )
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is portfolio_module.Fill:
+                return _FakeRowsResult(
+                    [
+                        (buy_fill, buy_order, coin_market, buy_signal),
+                        (sell_fill, sell_order, coin_market, None),
+                    ]
+                )
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult([(buy_signal, coin_market)])
+            raise AssertionError(f"Unexpected entity: {entity}")
 
     fake_db = _PerfDB()
     fake_redis = _FakeRedis()
@@ -503,12 +707,13 @@ async def test_get_portfolio_performance_caches_and_separates_tp_reason(monkeypa
 
     response = await portfolio_module.get_portfolio_performance(limit=50, db=fake_db)
 
-    assert fake_db.calls == 1
+    assert fake_db.calls == 2
     assert response["summary"]["totalTrades"] == 1
     assert response["byExitReason"][0]["exitReason"] == "take_profit"
     assert response["byFinalScoreBand"][0]["scoreBand"] == "<0.50"
     assert response["bySentimentBand"][0]["sentimentBand"] == "0.25-0.49"
     assert response["byHourBlock"][0]["hourBlock"] == "08-12"
+    assert response["byTransition"] == []
     assert response["trades"][0]["exitReason"] == "take_profit"
     cache_key = portfolio_module._performance_cache_key(50, None, None)
     assert cache_key in fake_redis.values
@@ -545,7 +750,9 @@ async def test_get_portfolio_performance_filters_by_days(monkeypatch: pytest.Mon
     sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 105 >= 103", signal_id=None, coin_id=1)
     buy_signal = SimpleNamespace(
         id=1,
+        coin_id=1,
         strategy_id="hybrid_v1",
+        ts=datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc),
         ta_score=0.4,
         sentiment_score=0.3,
         final_score=0.36,
@@ -554,15 +761,20 @@ async def test_get_portfolio_performance_filters_by_days(monkeypatch: pytest.Mon
     )
 
     class _PerfDB:
-        async def execute(self, _statement):
-            return _FakeRowsResult(
-                [
-                    (old_buy_fill, buy_order, "KRW-ETH", buy_signal),
-                    (old_sell_fill, sell_order, "KRW-ETH", None),
-                    (recent_buy_fill, buy_order, "KRW-BTC", buy_signal),
-                    (recent_sell_fill, sell_order, "KRW-BTC", None),
-                ]
-            )
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is portfolio_module.Fill:
+                return _FakeRowsResult(
+                    [
+                        (old_buy_fill, buy_order, "KRW-ETH", buy_signal),
+                        (old_sell_fill, sell_order, "KRW-ETH", None),
+                        (recent_buy_fill, buy_order, "KRW-BTC", buy_signal),
+                        (recent_sell_fill, sell_order, "KRW-BTC", None),
+                    ]
+                )
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult([(buy_signal, "KRW-BTC")])
+            raise AssertionError(f"Unexpected entity: {entity}")
 
     class _FrozenDateTime(datetime):
         @classmethod
@@ -598,7 +810,9 @@ async def test_get_portfolio_performance_filters_by_market(monkeypatch: pytest.M
     sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 105 >= 103", signal_id=None, coin_id=1)
     buy_signal = SimpleNamespace(
         id=1,
+        coin_id=1,
         strategy_id="hybrid_v1",
+        ts=datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc),
         ta_score=0.4,
         sentiment_score=0.3,
         final_score=0.36,
@@ -607,15 +821,20 @@ async def test_get_portfolio_performance_filters_by_market(monkeypatch: pytest.M
     )
 
     class _PerfDB:
-        async def execute(self, _statement):
-            return _FakeRowsResult(
-                [
-                    (buy_fill, buy_order, "KRW-BTC", buy_signal),
-                    (sell_fill, sell_order, "KRW-BTC", None),
-                    (buy_fill, buy_order, "KRW-ETH", buy_signal),
-                    (sell_fill, sell_order, "KRW-ETH", None),
-                ]
-            )
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is portfolio_module.Fill:
+                return _FakeRowsResult(
+                    [
+                        (buy_fill, buy_order, "KRW-BTC", buy_signal),
+                        (sell_fill, sell_order, "KRW-BTC", None),
+                        (buy_fill, buy_order, "KRW-ETH", buy_signal),
+                        (sell_fill, sell_order, "KRW-ETH", None),
+                    ]
+                )
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult([(buy_signal, "KRW-ETH")])
+            raise AssertionError(f"Unexpected entity: {entity}")
 
     fake_redis = _FakeRedis()
     monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
@@ -629,3 +848,7 @@ async def test_get_portfolio_performance_filters_by_market(monkeypatch: pytest.M
 
 async def _noop():
     return None
+
+
+async def _awaitable(value):
+    return value

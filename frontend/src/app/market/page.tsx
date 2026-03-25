@@ -7,19 +7,20 @@ import { Search, TrendingUp, TrendingDown } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 import { cn } from "@/utils/cn";
+import type { MarketInfo } from "@/types/market";
 
 export default function MarketPage() {
   const [search, setSearch] = useState("");
   const tickers = useMarketStore((s) => s.tickers);
   const setSelectedMarket = useMarketStore((s) => s.setSelectedMarket);
 
-  const { data: markets = [] } = useQuery({
+  const { data: markets = [] } = useQuery<MarketInfo[]>({
     queryKey: ["markets"],
     queryFn: api.markets.list,
     staleTime: 60_000,
   });
 
-  const filtered = markets.filter((m: { market: string }) =>
+  const filtered = markets.filter((m) =>
     m.market.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -43,7 +44,7 @@ export default function MarketPage() {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-            {filtered.map((m: { market: string }) => {
+            {filtered.map((m) => {
               const ticker = tickers[m.market];
               const isRise = ticker?.change === "RISE";
               const isFall = ticker?.change === "FALL";
@@ -55,9 +56,16 @@ export default function MarketPage() {
                   className="bg-gray-900 rounded-xl border border-gray-800 p-4 hover:border-emerald-500/50 transition-colors text-left"
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono font-bold text-sm">
-                      {m.market.replace("KRW-", "")}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-sm">
+                        {m.market.replace("KRW-", "")}
+                      </span>
+                      {m.excluded && (
+                        <span className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide bg-red-950 text-red-300">
+                          excluded
+                        </span>
+                      )}
+                    </div>
                     {ticker && (
                       isRise ? (
                         <TrendingUp className="w-4 h-4 text-emerald-400" />

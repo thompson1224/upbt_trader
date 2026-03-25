@@ -42,6 +42,23 @@ function formatScore(value: number | null) {
   return value.toFixed(2);
 }
 
+function formatGapMinutes(currentTs: string, previousTs?: string) {
+  if (!previousTs) {
+    return "시작";
+  }
+  const diffMs = new Date(previousTs).getTime() - new Date(currentTs).getTime();
+  const diffMinutes = Math.max(Math.round(diffMs / 60000), 0);
+  if (diffMinutes < 1) {
+    return "직전";
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes}분 후`;
+  }
+  const hours = Math.floor(diffMinutes / 60);
+  const minutes = diffMinutes % 60;
+  return minutes > 0 ? `${hours}시간 ${minutes}분 후` : `${hours}시간 후`;
+}
+
 function describeSignalAlignment(position: Position | null, signal: SignalData | null) {
   if (!signal) {
     return "최근 신호 없음";
@@ -146,6 +163,16 @@ function CurrentPositionCard({ position }: { position: Position | null }) {
           {position.source}
         </span>
       </div>
+      {position.holdStale && position.holdWarning && (
+        <div className="mb-3 rounded-lg border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs text-amber-300">
+          {position.holdWarning}
+        </div>
+      )}
+      {!position.holdStale && position.consecutiveHoldCount > 0 && position.holdDurationMinutes != null && (
+        <div className="mb-3 text-xs text-gray-500">
+          최근 {position.consecutiveHoldCount}개 연속 hold · 약 {Math.round(position.holdDurationMinutes)}분째 관망 중
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
           <div className="text-gray-500">수량</div>
@@ -273,6 +300,65 @@ function RecentSignalCard({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SignalTimelineCard({ signals }: { signals: SignalData[] }) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900">
+      <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          최근 신호 타임라인
+        </div>
+        <div className="text-xs text-gray-600">최근 {signals.length}건</div>
+      </div>
+      <div className="divide-y divide-gray-800/80">
+        {signals.length === 0 ? (
+          <div className="px-4 py-8 text-sm text-gray-600">신호 데이터 없음</div>
+        ) : (
+          signals.map((signal, index) => {
+            const nextSignal = signals[index + 1];
+            return (
+              <div key={signal.id} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "rounded px-2 py-1 text-[10px] uppercase tracking-wide",
+                          signal.side === "buy" && "bg-emerald-950 text-emerald-300",
+                          signal.side === "sell" && "bg-red-950 text-red-300",
+                          signal.side === "hold" && "bg-slate-800 text-slate-300"
+                        )}
+                      >
+                        {signal.side}
+                      </span>
+                      <span className="font-mono text-xs text-gray-200">{formatDate(signal.ts)}</span>
+                      <span className="text-[11px] text-gray-600">{formatGapMinutes(signal.ts, nextSignal?.ts)}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-3 text-[11px] text-gray-500 sm:grid-cols-4">
+                      <div>TA <span className="font-mono text-gray-300">{formatScore(signal.taScore)}</span></div>
+                      <div>감성 <span className="font-mono text-gray-300">{formatScore(signal.sentimentScore)}</span></div>
+                      <div>Final <span className="font-mono text-gray-300">{formatScore(signal.finalScore)}</span></div>
+                      <div>Conf <span className="font-mono text-gray-300">{formatScore(signal.confidence)}</span></div>
+                    </div>
+                    {(signal.displayReason || signal.rejectionReason) && (
+                      <div className="mt-2 text-xs text-gray-400">
+                        {signal.displayReason || signal.rejectionReason}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-right text-[11px] text-gray-500">
+                    <div>{signal.status}</div>
+                    <div className="mt-1 font-mono text-gray-600">{signal.strategyId}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
@@ -445,6 +531,13 @@ export default function MarketPerformancePage() {
   const params = useParams<{ market: string }>();
   const market = decodeURIComponent(params.market);
   const [days, setDays] = useState<number | null>(30);
+  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+    queryKey: ["excluded-markets"],
+    queryFn: () => api.settings.getExcludedMarkets(),
+    refetchInterval: 30_000,
+  });
+  const excludedMarkets = excludedMarketState?.markets ?? [];
+  const isExcluded = excludedMarkets.includes(market);
 
   const { data, isLoading } = useQuery<PerformanceResponse>({
     queryKey: ["portfolio-performance-market", market, days],
@@ -458,7 +551,7 @@ export default function MarketPerformancePage() {
   });
   const { data: signals = [] } = useQuery<SignalData[]>({
     queryKey: ["signals", market, "recent"],
-    queryFn: () => api.signals.list({ market, limit: 5 }),
+    queryFn: () => api.signals.list({ market, limit: 20 }),
     refetchInterval: 30_000,
   });
   const { data: equityCurveResponse } = useQuery<{
@@ -489,8 +582,20 @@ export default function MarketPerformancePage() {
                 <ArrowLeft className="h-4 w-4" />
                 대시보드로 돌아가기
               </Link>
-              <h1 className="text-xl font-bold text-gray-100">{market} 상세 성과</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold text-gray-100">{market} 상세 성과</h1>
+                {isExcluded && (
+                  <span className="rounded px-2 py-1 text-[10px] uppercase tracking-wide bg-red-950 text-red-300">
+                    excluded
+                  </span>
+                )}
+              </div>
               <div className="mt-1 text-sm text-gray-500">코인별 종료 거래와 청산 사유를 분리해서 봅니다.</div>
+              {isExcluded && (
+                <div className="mt-2 text-xs text-red-300">
+                  현재 이 코인은 자동매매 신호 생성 대상에서 제외돼 있습니다.
+                </div>
+              )}
             </div>
             <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-1">
               {RANGE_OPTIONS.map((option) => (
@@ -530,6 +635,7 @@ export default function MarketPerformancePage() {
                 <div className="space-y-4">
                   <CurrentPositionCard position={currentPosition} />
                   <RecentSignalCard position={currentPosition} signals={signals} />
+                  <SignalTimelineCard signals={signals} />
                   <EquityCurveRangeCard market={market} points={equityCurve} latest={equityLatest} />
                   <BreakdownCard rows={byExitReason} />
                 </div>

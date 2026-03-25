@@ -12,7 +12,24 @@ export default function PositionPanel() {
     queryFn: api.portfolio.positions,
     refetchInterval: 30_000,
   });
+  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+    queryKey: ["excluded-markets"],
+    queryFn: () => api.settings.getExcludedMarkets(),
+    refetchInterval: 30_000,
+  });
   const tickers = useMarketStore((s) => s.tickers);
+  const excludedMarkets = excludedMarketState?.markets ?? [];
+  const sortedPositions = [...positions].sort((a, b) => {
+    if (a.holdStale !== b.holdStale) {
+      return a.holdStale ? -1 : 1;
+    }
+    const aHold = a.holdDurationMinutes ?? -1;
+    const bHold = b.holdDurationMinutes ?? -1;
+    if (aHold !== bHold) {
+      return bHold - aHold;
+    }
+    return a.market.localeCompare(b.market);
+  });
 
   const totalUnrealized = positions.reduce((acc, pos) => {
     const livePrice = tickers[pos.market]?.tradePrice ?? pos.avgEntryPrice;
@@ -41,7 +58,7 @@ export default function PositionPanel() {
             보유 포지션 없음
           </div>
         ) : (
-          positions.map((pos) => {
+          sortedPositions.map((pos) => {
             const livePrice = tickers[pos.market]?.tradePrice ?? pos.avgEntryPrice;
             const liveUnrealized = (livePrice - pos.avgEntryPrice) * pos.qty;
             const pnlPct =
@@ -77,6 +94,11 @@ export default function PositionPanel() {
                     >
                       {pos.source === "strategy" ? "strategy" : "external"}
                     </span>
+                    {excludedMarkets.includes(pos.market) && (
+                      <span className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide bg-red-950 text-red-300">
+                        excluded
+                      </span>
+                    )}
                   </span>
                   <span
                     className={cn(
@@ -94,6 +116,16 @@ export default function PositionPanel() {
                 <div className="text-gray-600">
                   수량: {pos.qty.toFixed(6)} | 평균: {pos.avgEntryPrice.toLocaleString("ko-KR")} | 현재: {livePrice.toLocaleString("ko-KR")}
                 </div>
+                {pos.holdStale && pos.holdWarning && (
+                  <div className="mt-1 rounded border border-amber-900 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300">
+                    {pos.holdWarning}
+                  </div>
+                )}
+                {!pos.holdStale && pos.consecutiveHoldCount > 0 && pos.holdDurationMinutes != null && (
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    최근 {pos.consecutiveHoldCount}개 연속 hold · 약 {Math.round(pos.holdDurationMinutes)}분째 관망 중
+                  </div>
+                )}
                 {latestSignal && (
                   <div className="mt-0.5 text-gray-500">
                     최근 신호:
