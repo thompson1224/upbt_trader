@@ -104,6 +104,9 @@ def _build_trade_event_message(data: dict) -> str:
     event_type = str(data.get("type", "trade_event"))
     market = str(data.get("market", "") or "")
     reason = str(data.get("reason", "") or "")
+    signal_id = data.get("signalId")
+    if market and reason and signal_id is not None:
+        return f"{event_type} {market} signal={signal_id}: {reason}"[:255]
     if market and reason:
         return f"{event_type} {market}: {reason}"[:255]
     if market:

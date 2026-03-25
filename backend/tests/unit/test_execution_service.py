@@ -6,14 +6,17 @@ from apps.execution_service.main import (
     _can_execute_signal,
     _default_protection_levels,
     _extract_exchange_position_rows,
+    _extract_total_krw_balance,
     _filter_new_trades,
     _is_manual_test_signal,
     _position_management_key,
     _resolve_manual_test_qty,
+    _resolve_market_buy_krw_amount,
     _resolve_position_source,
     _position_source_from_strategy_managed,
     _resolve_protection_levels,
     _resolve_synced_position_protection_levels,
+    _should_reset_loss_streak,
     _runtime_state_daily_pnl_key,
     _summarize_trades,
     _should_enforce_position_protection,
@@ -29,10 +32,19 @@ def test_extract_exchange_position_rows_separates_krw_and_assets():
 
     available_krw, positions = _extract_exchange_position_rows(balances)
 
-    assert available_krw == 1025.75
+    assert available_krw == 1000.5
     assert set(positions) == {"BTC"}
     assert positions["BTC"]["qty"] == pytest.approx(0.0012)
     assert positions["BTC"]["avg_entry_price"] == 100000000.0
+
+
+def test_extract_total_krw_balance_includes_locked_krw():
+    balances = [
+        {"currency": "KRW", "balance": "1000.5", "locked": "25.25", "avg_buy_price": "0"},
+        {"currency": "BTC", "balance": "0.001", "locked": "0.0002", "avg_buy_price": "100000000"},
+    ]
+
+    assert _extract_total_krw_balance(balances) == pytest.approx(1025.75)
 
 
 def test_extract_exchange_position_rows_ignores_zero_balances():
@@ -174,3 +186,31 @@ def test_summarize_trades_uses_trade_funds_and_volume():
     assert executed_funds == pytest.approx(320.0)
     assert avg_price == pytest.approx(320.0 / 3.0)
     assert total_fee == pytest.approx(0.16)
+
+
+def test_should_reset_loss_streak_only_when_stored_date_differs():
+    assert _should_reset_loss_streak("20260324", "20260325") is True
+    assert _should_reset_loss_streak("20260325", "20260325") is False
+    assert _should_reset_loss_streak(None, "20260325") is False
+
+
+def test_resolve_market_buy_krw_amount_clamps_to_fee_adjusted_balance():
+    result = _resolve_market_buy_krw_amount(
+        requested_qty=10.0,
+        entry_price=2_000.0,
+        available_krw=13_141.23,
+        min_order_krw=5_000.0,
+    )
+
+    assert result == 13_134
+
+
+def test_resolve_market_buy_krw_amount_rejects_if_clamped_below_minimum():
+    result = _resolve_market_buy_krw_amount(
+        requested_qty=10.0,
+        entry_price=1_000.0,
+        available_krw=4_999.0,
+        min_order_krw=5_000.0,
+    )
+
+    assert result == 0

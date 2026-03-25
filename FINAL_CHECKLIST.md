@@ -54,6 +54,7 @@
 
 - [x] 소액 자동매매 실거래 1회 관찰
 - [x] 자동매매 `ON` 상태에서 실제 전략 주문 1건 확인
+- [x] `insufficient_funds_bid` 보수 후 실제 전략 매수 1건 정상 처리 확인
 - [ ] 하루 정도 주문/체결/감사로그 모니터링
 - [ ] 문제 없으면 그때부터 24/7 운영 판단
 
@@ -63,6 +64,7 @@
 - [x] ON 직후 5~10분 관찰 마무리
 - [x] 소액 자동매매 1회 결과 확인
 - [x] 자동매매 `ON` 상태 첫 실제 전략 주문 확인
+- [x] KRW clamp 보수 후 새 실제 전략 매수 1건 확인
 - [ ] 하루 관찰 후 24/7 운영 여부 결정
 
 ## 바로 쓸 명령
@@ -98,5 +100,6 @@ curl -sS 'http://localhost:8000/api/v1/audit-events?limit=20'
 ## 참고 문서
 
 - [OPERATIONS_RUNBOOK.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/OPERATIONS_RUNBOOK.md)
+- [OPERATIONS_APPROVAL_2026-03-25.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/OPERATIONS_APPROVAL_2026-03-25.md)
 - [WORKLOG_2026-03-24.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/WORKLOG_2026-03-24.md)
 - [USER_MANUAL.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/USER_MANUAL.md)

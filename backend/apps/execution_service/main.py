@@ -44,6 +44,10 @@ EQUITY_CURVE_MAX_POINTS = 500
 PORTFOLIO_EQUITY_CURVE_KEY = "portfolio:equity_curve"
 PORTFOLIO_LATEST_SNAPSHOT_KEY = "portfolio:latest_snapshot"
 RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
+RUNTIME_STATE_LOSS_STREAK_DATE_KEY = "risk.loss_streak.date"
+UPBIT_FEE_RATE = 0.0005
+RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
+RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
 
 # 수수료(왕복 0.1%) 대비 최소 기대 수익률
 MIN_PROFIT_THRESHOLD = 0.003  # 0.3% 미만 기대 수익 신호 거부
@@ -63,7 +67,7 @@ def _extract_exchange_position_rows(
         total_qty = balance + locked
 
         if currency == "KRW":
-            available_krw = total_qty
+            available_krw = balance
             continue
 
         if total_qty <= 0:
@@ -75,6 +79,38 @@ def _extract_exchange_position_rows(
         }
 
     return available_krw, positions
+
+
+def _extract_total_krw_balance(balances: list[dict]) -> float:
+    """KRW 총액(balance + locked). 총자산 계산용."""
+    for item in balances:
+        currency = str(item.get("currency", "")).upper()
+        if currency != "KRW":
+            continue
+        balance = float(item.get("balance", 0) or 0)
+        locked = float(item.get("locked", 0) or 0)
+        return balance + locked
+    return 0.0
+
+
+def _resolve_market_buy_krw_amount(
+    *,
+    requested_qty: float,
+    entry_price: float,
+    available_krw: float,
+    min_order_krw: float,
+    fee_rate: float = UPBIT_FEE_RATE,
+) -> int:
+    """시장가 매수 총액을 가용 KRW 상한으로 보정."""
+    requested_krw = int(round(requested_qty * entry_price))
+    if requested_krw <= 0 or entry_price <= 0 or available_krw <= 0:
+        return 0
+
+    max_affordable_krw = int(available_krw / (1 + max(fee_rate, 0.0)))
+    safe_krw = min(requested_krw, max_affordable_krw)
+    if safe_krw < min_order_krw:
+        return 0
+    return safe_krw
 
 
 def _default_protection_levels(
@@ -203,6 +239,16 @@ def _runtime_state_daily_pnl_key(now: datetime | None = None) -> str:
     return f"risk.daily_pnl.{ts.strftime('%Y%m%d')}"
 
 
+def _risk_metric_date(now: datetime | None = None) -> str:
+    kst = ZoneInfo("Asia/Seoul")
+    ts = now.astimezone(kst) if now else datetime.now(tz=kst)
+    return ts.strftime("%Y%m%d")
+
+
+def _should_reset_loss_streak(stored_date: str | None, current_date: str) -> bool:
+    return bool(stored_date) and stored_date != current_date
+
+
 def _filter_new_trades(
     trades: list[dict],
     existing_trade_uuids: set[str],
@@ -317,19 +363,31 @@ class ExecutionService:
 
     async def _compute_risk_metrics(self) -> tuple[float, int]:
         """Redis에 누적한 오늘 손익과 연속 손실 횟수를 조회."""
+        current_date = _risk_metric_date()
         try:
-            daily_raw, streak_raw = await self._redis.mget(
+            daily_raw, streak_raw, streak_date_raw = await self._redis.mget(
                 self._daily_pnl_redis_key(),
-                "risk:loss_streak",
+                RISK_LOSS_STREAK_REDIS_KEY,
+                RISK_LOSS_STREAK_DATE_REDIS_KEY,
             )
             daily_pnl = float(daily_raw.decode()) if daily_raw else 0.0
             loss_streak = int(streak_raw.decode()) if streak_raw else 0
-            if daily_raw is None and streak_raw is None:
-                return await self._load_risk_metrics_from_db()
+            streak_date = streak_date_raw.decode() if streak_date_raw else None
+            if daily_raw is None and streak_raw is None and streak_date_raw is None:
+                daily_pnl, loss_streak, streak_date = await self._load_risk_metrics_from_db()
+            if _should_reset_loss_streak(streak_date, current_date):
+                loss_streak = 0
+                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
+                await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
+                await self._persist_risk_metrics_to_db(daily_pnl, loss_streak, current_date)
             return daily_pnl, loss_streak
         except Exception as e:
             logger.warning("Risk metric read failed: %s", e)
-            return await self._load_risk_metrics_from_db()
+            daily_pnl, loss_streak, streak_date = await self._load_risk_metrics_from_db()
+            if _should_reset_loss_streak(streak_date, current_date):
+                await self._persist_risk_metrics_to_db(daily_pnl, 0, current_date)
+                return daily_pnl, 0
+            return daily_pnl, loss_streak
 
     @staticmethod
     def _daily_pnl_redis_key(now: datetime | None = None) -> str:
@@ -341,48 +399,70 @@ class ExecutionService:
         """실현 손익과 연속 손실 횟수를 Redis에 누적."""
         try:
             daily_key = self._daily_pnl_redis_key()
+            current_date = _risk_metric_date()
+            streak_date_raw = await self._redis.get(RISK_LOSS_STREAK_DATE_REDIS_KEY)
+            streak_date = streak_date_raw.decode() if streak_date_raw else None
+            if _should_reset_loss_streak(streak_date, current_date):
+                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
             await self._redis.incrbyfloat(daily_key, trade_pnl)
             await self._redis.expire(daily_key, 60 * 60 * 48)
             if trade_pnl < 0:
-                await self._redis.incr("risk:loss_streak")
+                await self._redis.incr(RISK_LOSS_STREAK_REDIS_KEY)
             else:
-                await self._redis.set("risk:loss_streak", 0)
+                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
+            await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
             daily_pnl, loss_streak = await self._compute_risk_metrics()
-            await self._persist_risk_metrics_to_db(daily_pnl, loss_streak)
+            await self._persist_risk_metrics_to_db(daily_pnl, loss_streak, current_date)
         except Exception as e:
             logger.warning("Risk metric update failed: %s", e)
-            daily_pnl, loss_streak = await self._load_risk_metrics_from_db()
+            daily_pnl, loss_streak, _streak_date = await self._load_risk_metrics_from_db()
             updated_daily_pnl = daily_pnl + trade_pnl
             updated_loss_streak = (loss_streak + 1) if trade_pnl < 0 else 0
-            await self._persist_risk_metrics_to_db(updated_daily_pnl, updated_loss_streak)
+            await self._persist_risk_metrics_to_db(
+                updated_daily_pnl,
+                updated_loss_streak,
+                _risk_metric_date(),
+            )
 
     async def _restore_runtime_state_from_db(self):
         """Redis 리스크 키가 비어 있으면 DB 백업값으로 복구."""
         daily_key = self._daily_pnl_redis_key()
         try:
-            daily_raw, streak_raw = await self._redis.mget(daily_key, "risk:loss_streak")
-            if daily_raw is not None or streak_raw is not None:
+            daily_raw, streak_raw, streak_date_raw = await self._redis.mget(
+                daily_key,
+                RISK_LOSS_STREAK_REDIS_KEY,
+                RISK_LOSS_STREAK_DATE_REDIS_KEY,
+            )
+            if daily_raw is not None or streak_raw is not None or streak_date_raw is not None:
                 return
         except Exception as e:
             logger.warning("Runtime state pre-check failed: %s", e)
 
-        daily_pnl, loss_streak = await self._load_risk_metrics_from_db()
+        daily_pnl, loss_streak, streak_date = await self._load_risk_metrics_from_db()
         try:
             await self._redis.set(daily_key, daily_pnl)
             await self._redis.expire(daily_key, 60 * 60 * 48)
-            await self._redis.set("risk:loss_streak", loss_streak)
+            await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, loss_streak)
+            await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, streak_date or _risk_metric_date())
         except Exception as e:
             logger.warning("Runtime state restore to Redis failed: %s", e)
 
-    async def _load_risk_metrics_from_db(self) -> tuple[float, int]:
+    async def _load_risk_metrics_from_db(self) -> tuple[float, int, str | None]:
         async with self.session_factory() as db:
             daily_state = await db.get(RuntimeState, _runtime_state_daily_pnl_key())
             streak_state = await db.get(RuntimeState, RUNTIME_STATE_LOSS_STREAK_KEY)
+            streak_date_state = await db.get(RuntimeState, RUNTIME_STATE_LOSS_STREAK_DATE_KEY)
             daily_pnl = float(daily_state.value) if daily_state else 0.0
             loss_streak = int(streak_state.value) if streak_state else 0
-            return daily_pnl, loss_streak
+            streak_date = streak_date_state.value if streak_date_state else None
+            return daily_pnl, loss_streak, streak_date
 
-    async def _persist_risk_metrics_to_db(self, daily_pnl: float, loss_streak: int):
+    async def _persist_risk_metrics_to_db(
+        self,
+        daily_pnl: float,
+        loss_streak: int,
+        loss_streak_date: str | None = None,
+    ):
         async with self.session_factory() as db:
             daily_key = _runtime_state_daily_pnl_key()
             daily_state = await db.get(RuntimeState, daily_key)
@@ -396,6 +476,14 @@ class ExecutionService:
                 db.add(RuntimeState(key=RUNTIME_STATE_LOSS_STREAK_KEY, value=str(loss_streak)))
             else:
                 streak_state.value = str(loss_streak)
+
+            streak_date_key = RUNTIME_STATE_LOSS_STREAK_DATE_KEY
+            streak_date_state = await db.get(RuntimeState, streak_date_key)
+            streak_date_value = loss_streak_date or _risk_metric_date()
+            if streak_date_state is None:
+                db.add(RuntimeState(key=streak_date_key, value=streak_date_value))
+            else:
+                streak_date_state.value = streak_date_value
 
             await db.commit()
 
@@ -605,8 +693,9 @@ class ExecutionService:
             logger.error("Balance fetch failed: %s", e)
             return
 
-        krw_balance, exchange_positions = _extract_exchange_position_rows(balances)
-        total_equity = krw_balance + sum(
+        available_krw, exchange_positions = _extract_exchange_position_rows(balances)
+        total_krw = _extract_total_krw_balance(balances)
+        total_equity = total_krw + sum(
             payload["qty"] * payload["avg_entry_price"]
             for payload in exchange_positions.values()
         )
@@ -635,7 +724,7 @@ class ExecutionService:
 
         account = AccountState(
             total_equity=total_equity,
-            available_krw=krw_balance,
+            available_krw=available_krw,
             daily_pnl=daily_pnl,
             consecutive_losses=consecutive_losses,
             open_positions_count=open_positions,
@@ -663,7 +752,7 @@ class ExecutionService:
                             f"Manual test order below minimum {self.sizer.MIN_ORDER_KRW} KRW",
                         )
                     return
-                if order_value > krw_balance:
+                if order_value > available_krw:
                     async with self.session_factory() as db:
                         await self._update_signal_status(db, signal, "rejected", "Insufficient KRW")
                     return
@@ -702,7 +791,7 @@ class ExecutionService:
             )
             if qty <= 0:
                 # 리스크 기반 수량이 최소주문금액 미달 시 잔액이 충분하면 최소 주문으로 폴백
-                if krw_balance >= self.sizer.MIN_ORDER_KRW:
+                if available_krw >= self.sizer.MIN_ORDER_KRW:
                     qty = self.sizer.MIN_ORDER_KRW / entry_price
                 else:
                     async with self.session_factory() as db:
@@ -748,7 +837,22 @@ class ExecutionService:
         try:
             if signal.side == "buy":
                 # 업비트 시장가 매수: ord_type="price" + price=KRW금액
-                krw_amount = round(final_qty * entry_price)
+                krw_amount = _resolve_market_buy_krw_amount(
+                    requested_qty=final_qty,
+                    entry_price=entry_price,
+                    available_krw=available_krw,
+                    min_order_krw=self.sizer.MIN_ORDER_KRW,
+                )
+                if krw_amount < self.sizer.MIN_ORDER_KRW:
+                    async with self.session_factory() as db:
+                        await self._update_signal_status(
+                            db,
+                            signal,
+                            "rejected",
+                            "Insufficient KRW after fee buffer",
+                        )
+                    return
+                order_volume = krw_amount / entry_price
                 result = await self.upbit.place_order(
                     market=coin.market,
                     side="bid",
@@ -758,6 +862,7 @@ class ExecutionService:
                 )
             else:
                 # 업비트 시장가 매도: ord_type="market" + volume=코인수량
+                order_volume = final_qty
                 result = await self.upbit.place_order(
                     market=coin.market,
                     side="ask",
@@ -774,7 +879,7 @@ class ExecutionService:
                     side="bid" if signal.side == "buy" else "ask",
                     ord_type="price" if signal.side == "buy" else "market",
                     price=entry_price,
-                    volume=final_qty,
+                    volume=order_volume,
                     state=result.get("state", "wait"),
                     requested_at=datetime.now(tz=timezone.utc),
                 )
@@ -784,7 +889,7 @@ class ExecutionService:
 
             logger.info(
                 "Order placed: %s %s qty=%.6f uuid=%s",
-                coin.market, signal.side, final_qty, result.get("uuid"),
+                coin.market, signal.side, order_volume, result.get("uuid"),
             )
 
             # 주문 접수 이벤트 브로드캐스트
@@ -794,7 +899,7 @@ class ExecutionService:
                     "market": coin.market,
                     "side": "bid" if signal.side == "buy" else "ask",
                     "price": entry_price,
-                    "volume": final_qty,
+                    "volume": order_volume,
                 }))
             except Exception:
                 pass
@@ -802,6 +907,16 @@ class ExecutionService:
         except Exception as e:
             async with self.session_factory() as db:
                 await self._update_signal_status(db, signal, "rejected", str(e))
+            try:
+                await self._redis.publish("upbit:trade_event", json.dumps({
+                    "type": "order_failed",
+                    "market": coin.market,
+                    "side": "bid" if signal.side == "buy" else "ask",
+                    "reason": str(e),
+                    "signalId": signal.id,
+                }))
+            except Exception:
+                pass
             logger.error("Order failed: %s - %s", coin.market, e)
 
     # ── 주문 동기화 루프 ────────────────────────────────────
@@ -1131,6 +1246,7 @@ class ExecutionService:
             if balances is None:
                 balances = await self.upbit.get_balances()
             available_krw, _exchange_positions = _extract_exchange_position_rows(balances)
+            total_krw = _extract_total_krw_balance(balances)
         except Exception as e:
             logger.warning("Portfolio snapshot skipped: balance fetch failed: %s", e)
             return
@@ -1161,7 +1277,7 @@ class ExecutionService:
         daily_pnl, _ = await self._compute_risk_metrics()
         snapshot = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "equity": available_krw + position_value,
+            "equity": total_krw + position_value,
             "availableKrw": available_krw,
             "positionValue": position_value,
             "dailyPnl": daily_pnl,

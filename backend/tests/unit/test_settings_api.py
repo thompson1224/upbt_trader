@@ -96,5 +96,29 @@ async def test_manual_test_mode_flag_roundtrip(monkeypatch: pytest.MonkeyPatch):
     assert current == {"enabled": True}
 
 
+@pytest.mark.asyncio
+async def test_reset_loss_streak_resets_redis_and_runtime_state(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    persisted = {}
+
+    async def _persist(values):
+        persisted.update(values)
+
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "_persist_runtime_state_values", _persist)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+    monkeypatch.setattr(settings_module, "_risk_metric_date", lambda now=None: "20260325")
+
+    response = await settings_module.reset_loss_streak()
+
+    assert response == {"lossStreak": 0, "streakDate": "20260325"}
+    assert fake_redis.store[settings_module.RISK_LOSS_STREAK_REDIS_KEY] == "0"
+    assert fake_redis.store[settings_module.RISK_LOSS_STREAK_DATE_REDIS_KEY] == "20260325"
+    assert persisted == {
+        settings_module.RUNTIME_STATE_LOSS_STREAK_KEY: "0",
+        settings_module.RUNTIME_STATE_LOSS_STREAK_DATE_KEY: "20260325",
+    }
+
+
 async def _noop():
     return None

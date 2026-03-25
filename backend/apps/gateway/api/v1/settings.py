@@ -1,6 +1,8 @@
 from __future__ import annotations
 """API 키 및 자동매매 설정 관리"""
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException
@@ -8,6 +10,8 @@ from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
 from libs.audit import record_audit_event
+from libs.db.models import RuntimeState
+from libs.db.session import get_session_factory
 
 router = APIRouter()
 
@@ -16,6 +20,10 @@ UPBIT_SECRET_KEY_REDIS_KEY = "secret:upbit:secret"
 AUTO_TRADE_REDIS_KEY = "auto_trade:enabled"
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
+RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
+RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
+RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
+RUNTIME_STATE_LOSS_STREAK_DATE_KEY = "risk.loss_streak.date"
 
 
 def _get_redis():
@@ -28,6 +36,24 @@ def _get_fernet() -> Fernet:
     if not key:
         raise HTTPException(500, "Encryption key not configured")
     return Fernet(key.encode())
+
+
+def _risk_metric_date(now: datetime | None = None) -> str:
+    kst = ZoneInfo("Asia/Seoul")
+    ts = now.astimezone(kst) if now else datetime.now(tz=kst)
+    return ts.strftime("%Y%m%d")
+
+
+async def _persist_runtime_state_values(values: dict[str, str]) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        for key, value in values.items():
+            state = await db.get(RuntimeState, key)
+            if state is None:
+                db.add(RuntimeState(key=key, value=value))
+            else:
+                state.value = value
+        await db.commit()
 
 
 # ── 요청 스키마 ─────────────────────────────────────────────
@@ -182,3 +208,27 @@ async def get_manual_test_mode():
         await r.aclose()
     enabled = (val is not None) and (val.decode() == "1")
     return {"enabled": enabled}
+
+
+@router.post("/settings/risk/reset-loss-streak")
+async def reset_loss_streak():
+    """연속 손실 횟수를 즉시 0으로 초기화."""
+    current_date = _risk_metric_date()
+    r = _get_redis()
+    try:
+        await r.set(RISK_LOSS_STREAK_REDIS_KEY, "0")
+        await r.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
+    finally:
+        await r.aclose()
+
+    await _persist_runtime_state_values({
+        RUNTIME_STATE_LOSS_STREAK_KEY: "0",
+        RUNTIME_STATE_LOSS_STREAK_DATE_KEY: current_date,
+    })
+    await record_audit_event(
+        event_type="loss_streak_reset",
+        source="settings",
+        message="Loss streak reset",
+        payload={"loss_streak": 0, "streak_date": current_date},
+    )
+    return {"lossStreak": 0, "streakDate": current_date}

@@ -139,5 +139,10 @@ export const api = {
       apiClient.patch("/settings/external-position-stop-loss", { enabled }).then((r) => r.data),
     getExternalPositionStopLoss: () =>
       apiClient.get("/settings/external-position-stop-loss").then((r) => r.data as { enabled: boolean }),
+    resetLossStreak: () =>
+      apiClient.post("/settings/risk/reset-loss-streak").then((r) => r.data as {
+        lossStreak: number;
+        streakDate: string;
+      }),
   },
 };

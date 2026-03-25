@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/services/api";
-import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert } from "lucide-react";
+import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert, RotateCcw } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 
@@ -13,6 +13,8 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
   const [loadingProtection, setLoadingProtection] = useState(true);
+  const [resettingLossStreak, setResettingLossStreak] = useState(false);
+  const [lossStreakResetStatus, setLossStreakResetStatus] = useState<"idle" | "success" | "error">("idle");
 
   useEffect(() => {
     api.settings
@@ -36,6 +38,21 @@ export default function SettingsPage() {
     } catch {
       setStatus("error");
       setTimeout(() => setStatus("idle"), 3000);
+    }
+  };
+
+  const handleResetLossStreak = async () => {
+    setResettingLossStreak(true);
+    setLossStreakResetStatus("idle");
+    try {
+      await api.settings.resetLossStreak();
+      setLossStreakResetStatus("success");
+      setTimeout(() => setLossStreakResetStatus("idle"), 3000);
+    } catch {
+      setLossStreakResetStatus("error");
+      setTimeout(() => setLossStreakResetStatus("idle"), 3000);
+    } finally {
+      setResettingLossStreak(false);
     }
   };
 
@@ -123,6 +140,44 @@ export default function SettingsPage() {
                 />
               </button>
             </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <RotateCcw className="w-4 h-4 text-sky-400" />
+              <h2 className="font-semibold text-sm">연속 손실 복구</h2>
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-gray-300">
+                  연속 손실 제한에 걸려 신규 진입이 막힌 상태를 운영자가 즉시 해제합니다.
+                </p>
+                <p className="text-xs text-gray-600 mt-2">
+                  KST 날짜 변경 시 자동으로 초기화되지만, 지금 바로 복구가 필요하면 이 버튼을 사용합니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResetLossStreak}
+                disabled={resettingLossStreak}
+                className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 disabled:opacity-50"
+              >
+                <RotateCcw className="h-4 w-4" />
+                {resettingLossStreak ? "복구 중..." : "연속 손실 초기화"}
+              </button>
+            </div>
+            {lossStreakResetStatus === "success" && (
+              <div className="mt-3 flex items-center gap-1 text-sm text-emerald-400">
+                <CheckCircle className="h-4 w-4" />
+                연속 손실 카운트가 초기화됐습니다.
+              </div>
+            )}
+            {lossStreakResetStatus === "error" && (
+              <div className="mt-3 flex items-center gap-1 text-sm text-red-400">
+                <AlertCircle className="h-4 w-4" />
+                연속 손실 초기화에 실패했습니다.
+              </div>
+            )}
           </section>
 
           <div className="flex items-center gap-3">

@@ -230,7 +230,8 @@ docker compose top execution
 | 마켓 | `/market` | 전체 KRW 마켓 목록 |
 | 주문 내역 | `/orders` | 주문 이력 및 필터 |
 | 백테스트 | `/backtest` | 전략 검증 (개발 중) |
-| 설정 | `/settings` | API 키 관리 |
+| 감사로그 | `/audit` | 설정 변경, 주문 실패, 리스크 거절 확인 |
+| 설정 | `/settings` | API 키 및 운영 복구 설정 |
 
 ---
 
@@ -338,8 +339,15 @@ docker compose top execution
 | 업비트 Access Key | 업비트 API Access Key |
 | 업비트 Secret Key | 업비트 API Secret Key |
 | Groq API 키 | `gsk_...` 형태 (console.groq.com) |
+| 외부 보유분 자동 손절 | 외부 보유 코인에 기본 손절만 허용 |
+| 연속 손실 초기화 | `loss_streak` 즉시 0으로 복구 |
 
 **보기/숨기기 토글**: 키 값 마스킹 ON/OFF
+
+**연속 손실 초기화 버튼**:
+- 리스크 가드가 `Max consecutive losses reached: 5`로 신규 매수를 막을 때 사용
+- KST 날짜가 바뀌면 자동으로 초기화되지만, 운영 중 즉시 복구가 필요하면 설정 화면 버튼으로 직접 초기화 가능
+- 성공 시 감사로그에 `loss_streak_reset` 이벤트가 남음
 
 > ⚠️ 웹 UI 저장은 런타임 임시 저장입니다. `backend/.env` 파일 수정이 영구적입니다.
 
@@ -358,6 +366,22 @@ docker compose top execution
 | 🔴 빨강 | 리스크 거절 | `KRW-DOGE — Daily loss limit reached` |
 
 ---
+
+### 5-10. 감사로그 페이지 (`/audit`)
+
+- 최근 설정 변경, 주문 접수/체결, 주문 실패, 리스크 거절 이벤트를 시간순으로 조회
+- `source`, `level` 필터 가능
+- payload JSON 펼침 가능
+- 운영 중 이상 징후는 여기서 먼저 확인하는 것이 가장 빠름
+
+대표적으로 보이는 이벤트:
+- `order_placed`
+- `order_filled`
+- `order_failed`
+- `sl_triggered`
+- `tp_triggered`
+- `risk_rejected`
+- `loss_streak_reset`
 
 ## 6. 자동매매 동작 방식
 
@@ -417,6 +441,8 @@ docker compose top execution
   │     ├─ 동시 보유 5종목 초과 → REJECT
   │     ├─ 단건 금액 > 총자산 1% → 수량 축소 후 APPROVE
   │     └─ 포지션 비중 > 10% → 수량 축소 후 APPROVE
+  ├─ 매수 주문 직전 가용 KRW + 수수료 버퍼 기준 주문금액 clamp
+  │     └─ 부족 시 거래소 호출 전 `Insufficient KRW after fee buffer`로 REJECT
   ├─ APPROVE → Upbit 시장가 주문 실행
   └─ Redis "upbit:trade_event" 발행 → 프론트 토스트 알림
 
@@ -462,11 +488,12 @@ docker compose restart execution
 |------|------|------|
 | 시장 경보(CAUTION/WARNING) 코인 | 거래 거부 | 업비트 공식 경보 기준 |
 | 일일 KST 기준 실현손익 ≤ −3% | 매수 거부 | 다음날 자동 해제 |
-| 연속 매도 손실 5회 이상 | 매수 거부 | 최근 20건 체결 기준 |
+| 연속 손실 5회 이상 | 매수 거부 | KST 날짜 변경 시 자동 해제, 설정 화면에서 수동 초기화 가능 |
 | 동시 보유 5종목 초과 | 신규 매수 거부 | |
 | 단건 금액 > 총자산 × 1% | 수량 축소 후 실행 | 거부 아님, 조정 후 실행 |
 | 포지션 비중 > 10% | 수량 축소 후 실행 | 거부 아님, 조정 후 실행 |
 | 현재가 조회 실패 | 신호 rejected 처리 | 무한 재시도 방지 |
+| 가용 KRW 부족 | 신호 rejected 처리 | 거래소 호출 전 `Insufficient KRW after fee buffer` |
 
 ### 현재 Risk 상태 확인
 
@@ -593,8 +620,9 @@ docker compose logs execution | grep "Signal rejected"
 | `Max open positions reached` | 5종목 동시 보유 | 일부 매도 후 재시도 |
 | `Market warning active` | 업비트 경보 종목 | 경보 해제 대기 |
 | `Insufficient qty` | 잔고 부족 | 업비트 KRW 잔고 확인 |
+| `Insufficient KRW after fee buffer` | 가용 KRW 부족 | KRW 잔고 보충 또는 기존 포지션 정리 |
 | `Ticker fetch error` | Upbit API 오류 | 잠시 후 자동 재시도 |
-| `Consecutive losses` | 연속 5회 손실 | 수동으로 `RISK_MAX_CONSECUTIVE_LOSSES` 조정 |
+| `Max consecutive losses reached` | 연속 손실 5회 도달 | 설정 화면에서 연속 손실 초기화 또는 날짜 변경 대기 |
 
 ---
 
@@ -620,7 +648,7 @@ docker compose logs strategy | grep "Groq"
 |------|------|------|
 | `401 Unauthorized` | API 키 오류 또는 IP 미허용 | 키 확인, 업비트 IP 화이트리스트 등록 |
 | `429 Too Many Requests` | 요청 빈도 초과 | 자동 대기 후 재시도 |
-| `400 Bad Request` | 최소 주문 금액 미달 | 잔고 확인 (최소 5,000 KRW) |
+| `400 Bad Request` | 예전 잔고 부족/주문 규칙 위반 | 감사로그 `order_failed` 확인 |
 | WS 연결 끊김 | 네트워크 불안정 | 자동 재연결 (별도 조치 불필요) |
 
 ---
@@ -718,11 +746,17 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel` |
 | GET | `/api/v1/positions` | 포지션 현황 | — |
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | — |
+| GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |
 | POST | `/api/v1/secrets/groq-key` | Groq 키 저장 | `api_key` |
 | GET | `/api/v1/settings/auto-trade` | 자동매매 상태 | — |
 | PATCH | `/api/v1/settings/auto-trade` | 자동매매 ON/OFF | `enabled: bool` |
+| GET | `/api/v1/settings/external-position-stop-loss` | 외부 보유분 손절 상태 | — |
+| PATCH | `/api/v1/settings/external-position-stop-loss` | 외부 보유분 손절 ON/OFF | `enabled: bool` |
+| GET | `/api/v1/settings/manual-test-mode` | 수동 테스트 모드 상태 | — |
+| PATCH | `/api/v1/settings/manual-test-mode` | 수동 테스트 모드 ON/OFF | `enabled: bool` |
+| POST | `/api/v1/settings/risk/reset-loss-streak` | 연속 손실 초기화 | — |
 
 ### WebSocket
 

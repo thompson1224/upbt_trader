@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
@@ -81,6 +82,21 @@ async def test_get_api_keys_falls_back_to_env_when_redis_is_empty(monkeypatch: p
 def test_compute_retry_delay_prefers_retry_after_header():
     delay = rest_client_module._compute_retry_delay({"Retry-After": "1.25"}, attempt=2)
     assert delay == pytest.approx(1.25)
+
+
+def test_format_http_status_error_includes_json_payload():
+    request = httpx.Request("POST", "https://api.upbit.com/v1/orders")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"name": "under_min_total_bid", "message": "최소 주문 금액 미만"}},
+    )
+    error = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    message = rest_client_module._format_http_status_error(error)
+
+    assert "payload=" in message
+    assert "under_min_total_bid" in message
 
 
 @pytest.mark.asyncio

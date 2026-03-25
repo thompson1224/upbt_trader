@@ -23,6 +23,20 @@ UPBIT_RETRY_BASE_DELAY_SEC = 0.5
 UPBIT_MAX_RETRIES = 3
 
 
+def _format_http_status_error(error: httpx.HTTPStatusError) -> str:
+    response = error.response
+    detail = ""
+    try:
+        payload = response.json()
+        if payload:
+            detail = f" payload={payload}"
+    except ValueError:
+        text = response.text.strip()
+        if text:
+            detail = f" body={text[:500]}"
+    return f"{error}{detail}"
+
+
 def _compute_retry_delay(headers: dict[str, str], attempt: int) -> float:
     retry_after = headers.get("Retry-After")
     if retry_after:
@@ -134,7 +148,7 @@ class UpbitRestClient:
                     await asyncio.sleep(UPBIT_RETRY_BASE_DELAY_SEC * (2 ** attempt))
                 except httpx.HTTPStatusError as e:
                     last_error = e
-                    raise
+                    raise RuntimeError(_format_http_status_error(e)) from e
 
         if last_error:
             raise last_error
