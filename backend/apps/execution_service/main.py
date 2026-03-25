@@ -114,6 +114,13 @@ def _resolve_market_buy_krw_amount(
     return safe_krw
 
 
+def _should_enforce_expected_profit_threshold(
+    side: str,
+    manual_test_signal: bool,
+) -> bool:
+    return side == "buy" and not manual_test_signal
+
+
 def _default_protection_levels(
     entry_price: float,
     stop_loss_pct: float,
@@ -699,7 +706,7 @@ class ExecutionService:
             return
 
         expected_profit = abs(signal.final_score) * 0.02
-        if (not manual_test_signal) and expected_profit < MIN_PROFIT_THRESHOLD:
+        if _should_enforce_expected_profit_threshold(signal.side, manual_test_signal) and expected_profit < MIN_PROFIT_THRESHOLD:
             async with self.session_factory() as db:
                 await self._update_signal_status(
                     db, signal, "rejected",

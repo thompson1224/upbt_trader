@@ -521,6 +521,10 @@ http://localhost:3000/performance/market/KRW-BTC
   │     OFF → 신호 처리 생략 (SL/TP는 계속 동작)
   ├─ 새 BUY/SELL 신호 조회
   ├─ Upbit REST API로 현재가(ticker) 조회
+  ├─ 보유 포지션이면 entry 규칙과 별도 exit 규칙 적용
+  │     ├─ `ta_score <= -0.15` → 강제 SELL
+  │     ├─ `downtrend` + `ta_score <= -0.05` → 보수적 SELL
+  │     └─ 그 외 보유 포지션은 HOLD 유지
   ├─ [Risk Guard 검증]
   │     ├─ 시장 경보 코인(CAUTION/WARNING) → REJECT
   │     ├─ 일일 손실 ≥ 3% → REJECT
@@ -530,6 +534,8 @@ http://localhost:3000/performance/market/KRW-BTC
   │     └─ 포지션 비중 > 10% → 수량 축소 후 APPROVE
   ├─ 매수 주문 직전 가용 KRW + 수수료 버퍼 기준 주문금액 clamp
   │     └─ 부족 시 거래소 호출 전 `Insufficient KRW after fee buffer`로 REJECT
+  ├─ 최소 기대수익 필터는 일반 `buy`에만 적용
+  │     └─ `sell`은 이 필터로 막지 않음
   ├─ APPROVE → Upbit 시장가 주문 실행
   └─ Redis "upbit:trade_event" 발행 → 프론트 토스트 알림
 
@@ -683,6 +689,10 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | `executed` | 주문 전송 완료 |
 | `rejected` | Risk Guard 또는 오류로 거부됨 |
 
+**주의**:
+- 현재 버전에서는 보유 포지션에 대해 별도 `exit` 규칙이 동작합니다.
+- 따라서 `sell`은 단순히 `final_score <= -0.30`일 때만 나오는 것이 아니라, 보유 포지션의 TA 약세가 강하면 더 일찍 발생할 수 있습니다.
+
 3. **execution 로그 확인**:
 ```bash
 docker compose logs execution --tail=30 | grep -E "Order|rejected|ERROR|auto_trade"
@@ -710,6 +720,7 @@ docker compose logs execution | grep "Signal rejected"
 | `Insufficient KRW after fee buffer` | 가용 KRW 부족 | KRW 잔고 보충 또는 기존 포지션 정리 |
 | `Ticker fetch error` | Upbit API 오류 | 잠시 후 자동 재시도 |
 | `Max consecutive losses reached` | 연속 손실 5회 도달 | 설정 화면에서 연속 손실 초기화 또는 날짜 변경 대기 |
+| `Expected profit ... < threshold ...` | 낮은 기대수익 진입 신호 | 일반 `buy`만 해당, `sell`에는 적용 안 됨 |
 
 ---
 

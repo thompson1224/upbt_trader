@@ -21,6 +21,7 @@ from apps.execution_service.main import (
     _runtime_state_daily_pnl_key,
     _summarize_trades,
     _should_enforce_position_protection,
+    _should_enforce_expected_profit_threshold,
 )
 
 
@@ -172,6 +173,12 @@ def test_min_buy_final_score_only_rejects_regular_buy_signals():
         auto_trade_enabled=True,
         manual_test_mode_enabled=False,
     ) is True
+
+
+def test_expected_profit_threshold_only_applies_to_regular_buy_signals():
+    assert _should_enforce_expected_profit_threshold("buy", False) is True
+    assert _should_enforce_expected_profit_threshold("buy", True) is False
+    assert _should_enforce_expected_profit_threshold("sell", False) is False
 
 
 def test_resolve_manual_test_qty_uses_requested_buy_or_position_sell():

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from dataclasses import replace
 
 import redis.asyncio as aioredis
 
@@ -12,10 +13,10 @@ from sqlalchemy import select, desc, func
 
 from libs.config import get_settings
 from libs.db.session import get_session_factory
-from libs.db.models import Coin, Candle1m, IndicatorSnapshot, SentimentSnapshot, Signal
+from libs.db.models import Coin, Candle1m, IndicatorSnapshot, SentimentSnapshot, Signal, Position
 from libs.ai.fear_greed_client import FearGreedClient
 from apps.strategy_service.indicators.calculator import compute_indicators
-from apps.strategy_service.fusion.signal_fusion import fuse_signals
+from apps.strategy_service.fusion.signal_fusion import fuse_signals, FusedSignal
 
 import pandas as pd
 
@@ -30,6 +31,40 @@ TOP_MARKETS_BY_VOLUME = 10   # 24h 거래량 상위 N개 코인만 처리
 # 1시간봉 추세 필터: EMA12/EMA30 비율 기준
 HOURLY_CANDLES = 60          # 1분봉 60개 = 1시간
 TREND_BAND = 0.002           # 0.2% 이내는 횡보로 판단
+HELD_POSITION_FORCE_SELL_TA_SCORE = -0.15
+HELD_POSITION_DOWNTREND_SELL_TA_SCORE = -0.05
+POSITION_SOURCE_STRATEGY = "strategy"
+
+
+def _apply_position_exit_overrides(
+    signal: FusedSignal,
+    *,
+    ta_score: float,
+    hourly_trend: str,
+    has_open_position: bool,
+) -> tuple[FusedSignal, str | None]:
+    if not has_open_position:
+        return signal, None
+    if signal.side == "sell":
+        return signal, "fused_sell"
+    if ta_score <= HELD_POSITION_FORCE_SELL_TA_SCORE:
+        return replace(signal, side="sell"), "held_position_ta_exit"
+    if hourly_trend == "downtrend" and ta_score <= HELD_POSITION_DOWNTREND_SELL_TA_SCORE:
+        return replace(signal, side="sell"), "held_position_downtrend_exit"
+    return replace(signal, side="hold"), "held_position_hold"
+
+
+def _is_signal_blocked_by_hourly_trend(
+    *,
+    signal_side: str,
+    hourly_trend: str,
+    has_open_position: bool,
+) -> bool:
+    if signal_side == "buy" and hourly_trend == "downtrend":
+        return True
+    if signal_side == "sell" and hourly_trend == "uptrend" and not has_open_position:
+        return True
+    return False
 
 
 class StrategyRunner:
@@ -112,9 +147,18 @@ class StrategyRunner:
                 .limit(CANDLE_WINDOW)
             )
             candles = list(reversed(result.scalars().all()))
+            position_result = await db.execute(
+                select(Position).where(Position.coin_id == coin.id)
+            )
+            position = position_result.scalar_one_or_none()
 
         if len(candles) < 50:
             return
+        has_open_position = bool(
+            position
+            and position.qty > 0
+            and position.source == POSITION_SOURCE_STRATEGY
+        )
 
         df = pd.DataFrame([
             {
@@ -158,6 +202,12 @@ class StrategyRunner:
             sentiment_score=sentiment_score,
             sentiment_confidence=sentiment_conf,
         )
+        signal, override_reason = _apply_position_exit_overrides(
+            signal,
+            ta_score=ind.ta_score,
+            hourly_trend=hourly_trend,
+            has_open_position=has_open_position,
+        )
 
         # hold 신호는 항상 저장 생략 (노이즈 제거, UI 정리)
         if signal.side == "hold":
@@ -166,11 +216,18 @@ class StrategyRunner:
             return
 
         # Phase 3: 추세 역행 신호 차단
-        if signal.side == "buy" and hourly_trend == "downtrend":
-            logger.debug("Buy signal blocked by downtrend filter: %s", coin.market)
-            return
-        if signal.side == "sell" and hourly_trend == "uptrend":
-            logger.debug("Sell signal blocked by uptrend filter: %s", coin.market)
+        if _is_signal_blocked_by_hourly_trend(
+            signal_side=signal.side,
+            hourly_trend=hourly_trend,
+            has_open_position=has_open_position,
+        ):
+            logger.debug(
+                "Signal blocked by trend filter: %s side=%s trend=%s holding=%s",
+                coin.market,
+                signal.side,
+                hourly_trend,
+                has_open_position,
+            )
             return
 
         # 신호 저장
@@ -197,9 +254,9 @@ class StrategyRunner:
             await db.commit()
 
         logger.info(
-            "Signal generated: %s %s score=%.2f conf=%.2f trend=%s",
+            "Signal generated: %s %s score=%.2f conf=%.2f trend=%s holding=%s override=%s",
             coin.market, signal.side, signal.final_score,
-            signal.confidence, hourly_trend,
+            signal.confidence, hourly_trend, has_open_position, override_reason,
         )
 
         # Redis로 신호 브로드캐스트
