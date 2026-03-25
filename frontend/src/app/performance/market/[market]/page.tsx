@@ -222,6 +222,11 @@ function RecentSignalCard({
             <div className="text-sm text-gray-300">{alignmentText}</div>
             <div className="mt-1 text-xs text-gray-600">{formatDate(latestSignal.ts)} · {latestSignal.strategyId}</div>
           </div>
+          {latestSignal.rejectionReason && (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2 text-xs text-gray-400">
+              최근 신호 사유: {latestSignal.rejectionReason}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div>
               <div className="text-gray-500">TA</div>
@@ -246,15 +251,22 @@ function RecentSignalCard({
             </div>
             <div className="space-y-2">
               {signals.slice(0, 5).map((signal) => (
-                <div key={signal.id} className="flex items-center justify-between text-xs">
-                  <div>
-                    <div className="font-mono text-gray-200">{signal.side}</div>
-                    <div className="text-gray-600">{formatDate(signal.ts)}</div>
+                <div key={signal.id} className="rounded-lg border border-gray-800/80 bg-gray-950/40 px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-mono text-gray-200">{signal.side}</div>
+                      <div className="text-gray-600">{formatDate(signal.ts)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-mono text-gray-300">F {formatScore(signal.finalScore)}</div>
+                      <div className="text-gray-600">{signal.status}</div>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <div className="font-mono text-gray-300">F {formatScore(signal.finalScore)}</div>
-                    <div className="text-gray-600">{signal.status}</div>
-                  </div>
+                  {signal.rejectionReason && (
+                    <div className="mt-2 text-[11px] text-gray-500">
+                      {signal.rejectionReason}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

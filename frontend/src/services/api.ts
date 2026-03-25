@@ -34,6 +34,7 @@ type RawSignalData = {
   status: string;
   suggested_stop_loss: number | null;
   suggested_take_profit: number | null;
+  rejection_reason: string | null;
 };
 
 export function mapSignalData(signal: RawSignalData) {
@@ -52,6 +53,7 @@ export function mapSignalData(signal: RawSignalData) {
     status: signal.status,
     suggestedStopLoss: signal.suggested_stop_loss,
     suggestedTakeProfit: signal.suggested_take_profit,
+    rejectionReason: signal.rejection_reason,
   };
 }
 

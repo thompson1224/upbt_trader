@@ -36,6 +36,7 @@ export interface SignalData {
   status: string;
   suggestedStopLoss: number | null;
   suggestedTakeProfit: number | null;
+  rejectionReason: string | null;
 }
 
 export interface Position {

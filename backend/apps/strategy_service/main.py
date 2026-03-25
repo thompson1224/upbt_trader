@@ -67,6 +67,12 @@ def _is_signal_blocked_by_hourly_trend(
     return False
 
 
+def _should_persist_signal(*, signal_side: str, has_open_position: bool) -> bool:
+    if signal_side != "hold":
+        return True
+    return has_open_position
+
+
 class StrategyRunner:
     def __init__(self):
         self.settings = get_settings()
@@ -209,8 +215,11 @@ class StrategyRunner:
             has_open_position=has_open_position,
         )
 
-        # hold 신호는 항상 저장 생략 (노이즈 제거, UI 정리)
-        if signal.side == "hold":
+        # hold는 보유 포지션 코인만 저장해서 exit 미실행 사유를 추적한다.
+        if not _should_persist_signal(
+            signal_side=signal.side,
+            has_open_position=has_open_position,
+        ):
             self._last_signal[coin.market] = "hold"
             self._signal_streak[coin.market] = 0
             return
@@ -246,9 +255,14 @@ class StrategyRunner:
                 final_score=signal.final_score,
                 confidence=signal.confidence,
                 side=signal.side,
-                status="new",
+                status="executed" if signal.side == "hold" else "new",
                 suggested_stop_loss=stop_loss,
                 suggested_take_profit=take_profit,
+                rejection_reason=(
+                    (override_reason or "hold_signal")[:200]
+                    if signal.side == "hold"
+                    else None
+                ),
             )
             db.add(db_signal)
             await db.commit()

@@ -18,5 +18,6 @@ class SignalResponse(BaseModel):
     status: str
     suggested_stop_loss: Optional[float]
     suggested_take_profit: Optional[float]
+    rejection_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}

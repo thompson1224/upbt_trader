@@ -2,6 +2,7 @@ from apps.strategy_service.fusion.signal_fusion import FusedSignal
 from apps.strategy_service.main import (
     _apply_position_exit_overrides,
     _is_signal_blocked_by_hourly_trend,
+    _should_persist_signal,
 )
 
 
@@ -77,5 +78,26 @@ def test_trend_filter_blocks_sell_without_position_in_uptrend():
     assert _is_signal_blocked_by_hourly_trend(
         signal_side="sell",
         hourly_trend="uptrend",
+        has_open_position=False,
+    ) is True
+
+
+def test_should_persist_hold_for_open_position():
+    assert _should_persist_signal(
+        signal_side="hold",
+        has_open_position=True,
+    ) is True
+
+
+def test_should_skip_hold_persistence_without_position():
+    assert _should_persist_signal(
+        signal_side="hold",
+        has_open_position=False,
+    ) is False
+
+
+def test_should_always_persist_non_hold_signals():
+    assert _should_persist_signal(
+        signal_side="buy",
         has_open_position=False,
     ) is True

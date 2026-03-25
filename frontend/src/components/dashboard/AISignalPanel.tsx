@@ -7,7 +7,9 @@ import ConfidenceFilter from "./ConfidenceFilter";
 export default function AISignalPanel() {
   const minConfidence = useMarketStore((s) => s.minConfidence);
   const allSignals = useMarketStore((s) => s.signals);
-  const signals = allSignals.filter((sig) => sig.confidence >= minConfidence);
+  const signals = allSignals.filter(
+    (sig) => sig.side === "hold" || sig.confidence >= minConfidence
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -110,6 +112,11 @@ function SignalCard({ signal }: { signal: import("@/types/market").SignalData })
       <div className="mt-1 text-xs text-gray-600">
         {new Date(signal.ts).toLocaleTimeString("ko-KR")}
       </div>
+      {signal.rejectionReason && (
+        <div className="mt-2 rounded border border-gray-800 bg-gray-900/80 px-2 py-1 text-[11px] text-gray-400">
+          {signal.rejectionReason}
+        </div>
+      )}
     </div>
   );
 }
