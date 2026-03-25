@@ -7,6 +7,7 @@ import type {
   MarketInfo,
   PerformanceResponse,
   Position,
+  TransitionRecommendationSettings,
 } from "@/types/market";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -250,6 +251,10 @@ export const api = {
       apiClient.patch("/settings/hold-stale-minutes", { value }).then((r) => r.data as { value: number }),
     getHoldStaleMinutes: () =>
       apiClient.get("/settings/hold-stale-minutes").then((r) => r.data as { value: number }),
+    setTransitionRecommendationSettings: (payload: TransitionRecommendationSettings) =>
+      apiClient.patch("/settings/transition-recommendation", payload).then((r) => r.data as TransitionRecommendationSettings),
+    getTransitionRecommendationSettings: () =>
+      apiClient.get("/settings/transition-recommendation").then((r) => r.data as TransitionRecommendationSettings),
     setExcludedMarkets: (items: ExcludedMarketItem[]) =>
       apiClient.patch("/settings/excluded-markets", { items }).then((r) => r.data as ExcludedMarketState),
     getExcludedMarkets: () =>

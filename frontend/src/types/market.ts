@@ -33,6 +33,14 @@ export interface ExcludedMarketState {
   items: ExcludedMarketItem[];
 }
 
+export interface TransitionRecommendationSettings {
+  min_hold_origin_count: number;
+  exclude_max_hold_to_sell_rate: number;
+  exclude_min_hold_to_hold_rate: number;
+  restore_min_hold_to_sell_rate: number;
+  restore_max_hold_to_hold_rate: number;
+}
+
 export interface CandleData {
   ts: string;
   open: number;

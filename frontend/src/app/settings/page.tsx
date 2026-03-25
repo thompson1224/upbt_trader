@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/services/api";
-import type { ExcludedMarketItem, MarketInfo } from "@/types/market";
+import type { ExcludedMarketItem, MarketInfo, TransitionRecommendationSettings } from "@/types/market";
 import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert, RotateCcw } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
@@ -15,6 +15,13 @@ export default function SettingsPage() {
   const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
   const [minBuyFinalScore, setMinBuyFinalScore] = useState("0.00");
   const [holdStaleMinutes, setHoldStaleMinutes] = useState("180");
+  const [transitionRecommendationSettings, setTransitionRecommendationSettings] = useState<TransitionRecommendationSettings>({
+    min_hold_origin_count: 3,
+    exclude_max_hold_to_sell_rate: 0.2,
+    exclude_min_hold_to_hold_rate: 0.6,
+    restore_min_hold_to_sell_rate: 0.4,
+    restore_max_hold_to_hold_rate: 0.35,
+  });
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [excludedMarkets, setExcludedMarkets] = useState<ExcludedMarketItem[]>([]);
   const [loadingProtection, setLoadingProtection] = useState(true);
@@ -32,6 +39,9 @@ export default function SettingsPage() {
     api.settings
       .getHoldStaleMinutes()
       .then(({ value }) => setHoldStaleMinutes(String(value)));
+    api.settings
+      .getTransitionRecommendationSettings()
+      .then(setTransitionRecommendationSettings);
     api.markets.list().then(setMarkets);
     api.settings.getExcludedMarkets().then(({ items }) => setExcludedMarkets(items));
   }, []);
@@ -48,6 +58,7 @@ export default function SettingsPage() {
       await api.settings.setExternalPositionStopLoss(externalStopLossEnabled);
       await api.settings.setMinBuyFinalScore(Number(minBuyFinalScore) || 0);
       await api.settings.setHoldStaleMinutes(Number(holdStaleMinutes) || 180);
+      await api.settings.setTransitionRecommendationSettings(transitionRecommendationSettings);
       await api.settings.setExcludedMarkets(excludedMarkets);
       setStatus("success");
       setTimeout(() => setStatus("idle"), 3000);
@@ -88,6 +99,16 @@ export default function SettingsPage() {
           : item
       )
     );
+  };
+
+  const updateTransitionRecommendationField = (
+    key: keyof TransitionRecommendationSettings,
+    value: number
+  ) => {
+    setTransitionRecommendationSettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
   };
 
   return (
@@ -174,6 +195,78 @@ export default function SettingsPage() {
                 보유 포지션에서 `hold`가 이 시간 이상 연속되면 대시보드와 상세 화면에 장기 관망 경고를 표시합니다. 기본값은 `180`분입니다.
               </p>
             </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-emerald-300" />
+              <h2 className="font-semibold text-sm">전환 추천 기준</h2>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">최소 Hold 시작 건수</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  value={transitionRecommendationSettings.min_hold_origin_count}
+                  onChange={(e) => updateTransitionRecommendationField("min_hold_origin_count", Number(e.target.value) || 1)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">제외 추천 최대 hold→sell 비율</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={transitionRecommendationSettings.exclude_max_hold_to_sell_rate}
+                  onChange={(e) => updateTransitionRecommendationField("exclude_max_hold_to_sell_rate", Number(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">제외 추천 최소 hold→hold 비율</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={transitionRecommendationSettings.exclude_min_hold_to_hold_rate}
+                  onChange={(e) => updateTransitionRecommendationField("exclude_min_hold_to_hold_rate", Number(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">복귀 검토 최소 hold→sell 비율</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={transitionRecommendationSettings.restore_min_hold_to_sell_rate}
+                  onChange={(e) => updateTransitionRecommendationField("restore_min_hold_to_sell_rate", Number(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">복귀 검토 최대 hold→hold 비율</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={transitionRecommendationSettings.restore_max_hold_to_hold_rate}
+                  onChange={(e) => updateTransitionRecommendationField("restore_max_hold_to_hold_rate", Number(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-400 font-mono"
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-gray-600">
+              전환 취약 코인 카드와 코인 상세 화면의 `제외 추천 / 복귀 검토` 배지는 이 기준으로 계산합니다.
+            </p>
           </section>
 
           <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">

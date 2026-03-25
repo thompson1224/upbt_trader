@@ -127,6 +127,33 @@ async def test_hold_stale_minutes_roundtrip(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_transition_recommendation_settings_roundtrip(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+
+    response = await settings_module.set_transition_recommendation_settings(
+        settings_module.TransitionRecommendationSettingsRequest(
+            min_hold_origin_count=4,
+            exclude_max_hold_to_sell_rate=0.15,
+            exclude_min_hold_to_hold_rate=0.7,
+            restore_min_hold_to_sell_rate=0.45,
+            restore_max_hold_to_hold_rate=0.25,
+        )
+    )
+    current = await settings_module.get_transition_recommendation_settings()
+
+    assert response == {
+        "min_hold_origin_count": 4,
+        "exclude_max_hold_to_sell_rate": 0.15,
+        "exclude_min_hold_to_hold_rate": 0.7,
+        "restore_min_hold_to_sell_rate": 0.45,
+        "restore_max_hold_to_hold_rate": 0.25,
+    }
+    assert current == response
+
+
+@pytest.mark.asyncio
 async def test_excluded_markets_roundtrip(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)

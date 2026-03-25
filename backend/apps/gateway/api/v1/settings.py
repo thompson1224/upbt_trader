@@ -26,6 +26,7 @@ MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
 MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
 HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
 EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
+TRANSITION_RECOMMENDATION_SETTINGS_REDIS_KEY = "settings:transition_recommendation"
 RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
 RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
@@ -91,6 +92,14 @@ class MinBuyFinalScoreRequest(BaseModel):
 
 class HoldStaleMinutesRequest(BaseModel):
     value: int
+
+
+class TransitionRecommendationSettingsRequest(BaseModel):
+    min_hold_origin_count: int = 3
+    exclude_max_hold_to_sell_rate: float = 0.20
+    exclude_min_hold_to_hold_rate: float = 0.60
+    restore_min_hold_to_sell_rate: float = 0.40
+    restore_max_hold_to_hold_rate: float = 0.35
 
 
 class ExcludedMarketItem(BaseModel):
@@ -193,6 +202,55 @@ def _diff_excluded_market_items(
         "removed": removed,
         "reason_changed": reason_changed,
     }
+
+
+def _default_transition_recommendation_settings() -> Dict[str, float]:
+    return {
+        "min_hold_origin_count": 3,
+        "exclude_max_hold_to_sell_rate": 0.20,
+        "exclude_min_hold_to_hold_rate": 0.60,
+        "restore_min_hold_to_sell_rate": 0.40,
+        "restore_max_hold_to_hold_rate": 0.35,
+    }
+
+
+def _normalize_transition_recommendation_settings(
+    req: TransitionRecommendationSettingsRequest,
+) -> Dict[str, float]:
+    if req.min_hold_origin_count < 1 or req.min_hold_origin_count > 100:
+        raise HTTPException(status_code=400, detail="min_hold_origin_count must be between 1 and 100")
+
+    rate_fields = {
+        "exclude_max_hold_to_sell_rate": req.exclude_max_hold_to_sell_rate,
+        "exclude_min_hold_to_hold_rate": req.exclude_min_hold_to_hold_rate,
+        "restore_min_hold_to_sell_rate": req.restore_min_hold_to_sell_rate,
+        "restore_max_hold_to_hold_rate": req.restore_max_hold_to_hold_rate,
+    }
+    for name, value in rate_fields.items():
+        if value < 0 or value > 1:
+            raise HTTPException(status_code=400, detail=f"{name} must be between 0 and 1")
+
+    return {
+        "min_hold_origin_count": int(req.min_hold_origin_count),
+        "exclude_max_hold_to_sell_rate": float(req.exclude_max_hold_to_sell_rate),
+        "exclude_min_hold_to_hold_rate": float(req.exclude_min_hold_to_hold_rate),
+        "restore_min_hold_to_sell_rate": float(req.restore_min_hold_to_sell_rate),
+        "restore_max_hold_to_hold_rate": float(req.restore_max_hold_to_hold_rate),
+    }
+
+
+def _parse_transition_recommendation_settings(raw: Optional[Union[bytes, str]]) -> Dict[str, float]:
+    settings = _default_transition_recommendation_settings()
+    if raw is None:
+        return settings
+    decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
+    payload = json.loads(decoded)
+    if not isinstance(payload, dict):
+        return settings
+    for key in settings.keys():
+        if key in payload:
+            settings[key] = float(payload[key]) if key != "min_hold_origin_count" else int(payload[key])
+    return settings
 
 
 # ── Upbit API 키 ────────────────────────────────────────────
@@ -389,6 +447,33 @@ async def get_hold_stale_minutes():
     if val is not None:
         return {"value": int(val.decode())}
     return {"value": int(get_settings().risk_hold_stale_minutes)}
+
+
+@router.patch("/settings/transition-recommendation")
+async def set_transition_recommendation_settings(req: TransitionRecommendationSettingsRequest):
+    normalized = _normalize_transition_recommendation_settings(req)
+    r = _get_redis()
+    try:
+        await r.set(TRANSITION_RECOMMENDATION_SETTINGS_REDIS_KEY, json.dumps(normalized))
+    finally:
+        await r.aclose()
+    await record_audit_event(
+        event_type="transition_recommendation_settings_updated",
+        source="settings",
+        message="Transition recommendation settings updated",
+        payload=normalized,
+    )
+    return normalized
+
+
+@router.get("/settings/transition-recommendation")
+async def get_transition_recommendation_settings():
+    r = _get_redis()
+    try:
+        val = await r.get(TRANSITION_RECOMMENDATION_SETTINGS_REDIS_KEY)
+    finally:
+        await r.aclose()
+    return _parse_transition_recommendation_settings(val)
 
 
 @router.patch("/settings/excluded-markets")

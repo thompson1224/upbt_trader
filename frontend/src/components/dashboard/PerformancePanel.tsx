@@ -14,6 +14,7 @@ import type {
   PerformanceResponse,
   PerformanceTrade,
   SignalTransitionRow,
+  TransitionRecommendationSettings,
 } from "@/types/market";
 
 const RANGE_OPTIONS = [
@@ -58,6 +59,40 @@ function formatMinutes(value: number) {
   const hours = Math.floor(value / 60);
   const minutes = Math.round(value % 60);
   return minutes > 0 ? `${hours}시간 ${minutes}분` : `${hours}시간`;
+}
+
+function getTransitionRecommendation(
+  row: MarketTransitionQualityRow,
+  isExcluded: boolean,
+  settings: TransitionRecommendationSettings
+): { label: string; description: string; tone: "red" | "emerald" } | null {
+  const excludeRecommended =
+    !isExcluded &&
+    row.holdOriginCount >= settings.min_hold_origin_count &&
+    row.holdToSellRate <= settings.exclude_max_hold_to_sell_rate &&
+    row.holdToHoldRate >= settings.exclude_min_hold_to_hold_rate;
+  if (excludeRecommended) {
+    return {
+      label: "제외 추천",
+      description: "hold→sell 전환이 낮고 hold 유지 비율이 높습니다.",
+      tone: "red",
+    };
+  }
+
+  const restoreRecommended =
+    isExcluded &&
+    row.holdOriginCount >= settings.min_hold_origin_count &&
+    row.holdToSellRate >= settings.restore_min_hold_to_sell_rate &&
+    row.holdToHoldRate <= settings.restore_max_hold_to_hold_rate;
+  if (restoreRecommended) {
+    return {
+      label: "복귀 검토",
+      description: "hold→sell 전환이 개선돼 재진입 후보로 볼 수 있습니다.",
+      tone: "emerald",
+    };
+  }
+
+  return null;
 }
 
 function BreakdownList({
@@ -217,11 +252,13 @@ function MarketTransitionQualityList({
   excludedMarkets,
   pendingMarket,
   onToggleExcluded,
+  recommendationSettings,
 }: {
   rows: MarketTransitionQualityRow[];
   excludedMarkets: string[];
   pendingMarket: string | null;
   onToggleExcluded: (market: string) => void;
+  recommendationSettings: TransitionRecommendationSettings;
 }) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
@@ -247,10 +284,47 @@ function MarketTransitionQualityList({
                       excluded
                     </span>
                   )}
+                  {(() => {
+                    const recommendation = getTransitionRecommendation(
+                      row,
+                      excludedMarkets.includes(row.market),
+                      recommendationSettings
+                    );
+                    if (!recommendation) {
+                      return null;
+                    }
+                    return (
+                      <span
+                        className={cn(
+                          "rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                          recommendation.tone === "red"
+                            ? "bg-amber-950 text-amber-300"
+                            : "bg-emerald-950 text-emerald-300"
+                        )}
+                      >
+                        {recommendation.label}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className="text-gray-600">
                   hold→sell {formatPct(row.holdToSellRate)} · hold→hold {formatPct(row.holdToHoldRate)}
                 </div>
+                {(() => {
+                  const recommendation = getTransitionRecommendation(
+                    row,
+                    excludedMarkets.includes(row.market),
+                    recommendationSettings
+                  );
+                  if (!recommendation) {
+                    return null;
+                  }
+                  return (
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      {recommendation.description}
+                    </div>
+                  );
+                })()}
               </div>
               <div className="text-right text-[11px] text-gray-500">
                 <div>hold 시작 {row.holdOriginCount}건</div>
@@ -296,6 +370,11 @@ export default function PerformancePanel() {
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
   });
+  const { data: recommendationSettings } = useQuery<TransitionRecommendationSettings>({
+    queryKey: ["transition-recommendation-settings"],
+    queryFn: () => api.settings.getTransitionRecommendationSettings(),
+    refetchInterval: 30_000,
+  });
 
   if (isLoading) {
     return (
@@ -315,6 +394,13 @@ export default function PerformancePanel() {
   const byMarketTransitionQuality = data?.byMarketTransitionQuality ?? [];
   const excludedMarkets = excludedMarketState?.markets ?? [];
   const excludedItems = excludedMarketState?.items ?? [];
+  const effectiveRecommendationSettings = recommendationSettings ?? {
+    min_hold_origin_count: 3,
+    exclude_max_hold_to_sell_rate: 0.2,
+    exclude_min_hold_to_hold_rate: 0.6,
+    restore_min_hold_to_sell_rate: 0.4,
+    restore_max_hold_to_hold_rate: 0.35,
+  };
   const trades = data?.trades ?? [];
 
   const handleToggleExcluded = async (market: string) => {
@@ -453,6 +539,7 @@ export default function PerformancePanel() {
             excludedMarkets={excludedMarkets}
             pendingMarket={pendingMarket}
             onToggleExcluded={handleToggleExcluded}
+            recommendationSettings={effectiveRecommendationSettings}
           />
         </div>
 

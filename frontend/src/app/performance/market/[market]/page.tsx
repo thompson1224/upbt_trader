@@ -10,12 +10,15 @@ import GlobalHeader from "@/components/layout/GlobalHeader";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
 import type {
+  AuditEvent,
   ExcludedMarketState,
+  MarketTransitionQualityRow,
   PerformanceBreakdownRow,
   PerformanceResponse,
   PerformanceTrade,
   Position,
   SignalData,
+  TransitionRecommendationSettings,
 } from "@/types/market";
 
 const RANGE_OPTIONS = [
@@ -137,6 +140,164 @@ function BreakdownCard({ rows }: { rows: PerformanceBreakdownRow[] }) {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+function getTransitionRecommendation(
+  row: MarketTransitionQualityRow | null,
+  isExcluded: boolean,
+  settings: TransitionRecommendationSettings
+): { label: string; description: string; tone: "red" | "emerald" } | null {
+  if (!row) {
+    return null;
+  }
+
+  const excludeRecommended =
+    !isExcluded &&
+    row.holdOriginCount >= settings.min_hold_origin_count &&
+    row.holdToSellRate <= settings.exclude_max_hold_to_sell_rate &&
+    row.holdToHoldRate >= settings.exclude_min_hold_to_hold_rate;
+  if (excludeRecommended) {
+    return {
+      label: "제외 추천",
+      description: "hold→sell 전환이 낮고 hold 유지 비율이 높아 운용 제외 후보입니다.",
+      tone: "red",
+    };
+  }
+
+  const restoreRecommended =
+    isExcluded &&
+    row.holdOriginCount >= settings.min_hold_origin_count &&
+    row.holdToSellRate >= settings.restore_min_hold_to_sell_rate &&
+    row.holdToHoldRate <= settings.restore_max_hold_to_hold_rate;
+  if (restoreRecommended) {
+    return {
+      label: "복귀 검토",
+      description: "hold→sell 전환이 개선돼 자동매매 복귀를 검토할 수 있습니다.",
+      tone: "emerald",
+    };
+  }
+
+  return null;
+}
+
+function getOperationLabel(event: AuditEvent) {
+  if (event.eventType === "excluded_market_added") {
+    return "제외";
+  }
+  if (event.eventType === "excluded_market_restored") {
+    return "복귀";
+  }
+  if (event.eventType === "excluded_market_reason_updated") {
+    return "사유 변경";
+  }
+  return event.eventType;
+}
+
+function ExclusionHistoryCard({
+  isExcluded,
+  excludedReason,
+  excludedUpdatedAt,
+  events,
+  recommendation,
+  transitionQuality,
+}: {
+  isExcluded: boolean;
+  excludedReason: string;
+  excludedUpdatedAt: string;
+  events: AuditEvent[];
+  recommendation: { label: string; description: string; tone: "red" | "emerald" } | null;
+  transitionQuality: MarketTransitionQualityRow | null;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          최근 운영 조치
+        </div>
+        <div className="text-xs text-gray-600">
+          최근 {Math.min(events.length, 5)}건
+        </div>
+      </div>
+      {isExcluded ? (
+        <div className="mb-3 rounded-lg border border-red-900 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+          <div>현재 제외 상태입니다.</div>
+          {excludedReason && <div className="mt-1">사유: {excludedReason}</div>}
+          {excludedUpdatedAt && (
+            <div className="mt-1 text-red-300/80">
+              마지막 변경: {formatDate(excludedUpdatedAt)}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mb-3 rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2 text-xs text-gray-400">
+          현재는 자동매매 제외 상태가 아닙니다.
+        </div>
+      )}
+      {recommendation && (
+        <div
+          className={cn(
+            "mb-3 rounded-lg border px-3 py-2 text-xs",
+            recommendation.tone === "red"
+              ? "border-amber-900 bg-amber-950/30 text-amber-200"
+              : "border-emerald-900 bg-emerald-950/30 text-emerald-200"
+          )}
+        >
+          <div className="font-semibold">{recommendation.label}</div>
+          <div className="mt-1">{recommendation.description}</div>
+        </div>
+      )}
+      {transitionQuality && (
+        <div className="mb-3 grid grid-cols-2 gap-3 text-xs text-gray-500">
+          <div>
+            hold→sell <span className="font-mono text-gray-300">{formatPct(transitionQuality.holdToSellRate)}</span>
+          </div>
+          <div>
+            hold→hold <span className="font-mono text-gray-300">{formatPct(transitionQuality.holdToHoldRate)}</span>
+          </div>
+          <div>
+            hold 시작 <span className="font-mono text-gray-300">{transitionQuality.holdOriginCount}건</span>
+          </div>
+          <div>
+            전체 전환 <span className="font-mono text-gray-300">{transitionQuality.totalTransitions}건</span>
+          </div>
+        </div>
+      )}
+      {events.length === 0 ? (
+        <div className="text-sm text-gray-600">최근 운영 조치 기록 없음</div>
+      ) : (
+        <div className="space-y-2">
+          {events.slice(0, 5).map((event) => (
+            <div key={event.id} className="rounded-lg border border-gray-800/80 bg-gray-950/40 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "rounded px-2 py-1 text-[10px] uppercase tracking-wide",
+                    event.eventType === "excluded_market_added" && "bg-red-950 text-red-300",
+                    event.eventType === "excluded_market_restored" && "bg-emerald-950 text-emerald-300",
+                    event.eventType === "excluded_market_reason_updated" && "bg-amber-950 text-amber-300",
+                  )}>
+                    {getOperationLabel(event)}
+                  </span>
+                  <span className="font-mono text-gray-200">{formatDate(event.ts)}</span>
+                </div>
+                <span className="text-[11px] text-gray-600">{event.source}</span>
+              </div>
+              <div className="mt-2 text-gray-300">{event.message}</div>
+              {event.payload && (
+                <div className="mt-2 text-[11px] text-gray-500">
+                  {"reason" in event.payload && typeof event.payload.reason === "string" && event.payload.reason
+                    ? `사유: ${event.payload.reason}`
+                    : "previous_reason" in event.payload && "reason" in event.payload
+                      ? `변경: ${String(event.payload.previous_reason || "-")} → ${String(event.payload.reason || "-")}`
+                      : null}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -544,7 +705,9 @@ export default function MarketPerformancePage() {
     refetchInterval: 30_000,
   });
   const excludedMarkets = excludedMarketState?.markets ?? [];
-  const excludedReason = excludedMarketState?.items.find((item) => item.market === market)?.reason ?? "";
+  const excludedItem = excludedMarketState?.items.find((item) => item.market === market);
+  const excludedReason = excludedItem?.reason ?? "";
+  const excludedUpdatedAt = excludedItem?.updated_at ?? "";
   const isExcluded = excludedMarkets.includes(market);
 
   const { data, isLoading } = useQuery<PerformanceResponse>({
@@ -562,6 +725,33 @@ export default function MarketPerformancePage() {
     queryFn: () => api.signals.list({ market, limit: 20 }),
     refetchInterval: 30_000,
   });
+  const { data: transitionQualityRows = [] } = useQuery<MarketTransitionQualityRow[]>({
+    queryKey: ["portfolio-performance-transition-quality", days],
+    queryFn: async () => {
+      const response = await api.portfolio.performance({ limit: 100, days: days ?? undefined });
+      return response.byMarketTransitionQuality ?? [];
+    },
+    refetchInterval: 30_000,
+  });
+  const { data: recommendationSettings } = useQuery<TransitionRecommendationSettings>({
+    queryKey: ["transition-recommendation-settings"],
+    queryFn: () => api.settings.getTransitionRecommendationSettings(),
+    refetchInterval: 30_000,
+  });
+  const { data: operationEvents = [] } = useQuery<AuditEvent[]>({
+    queryKey: ["audit", "market-exclusion-ops", market],
+    queryFn: async () => {
+      const rows = await api.audit.list({ source: "settings", market, limit: 20 });
+      return rows.filter((row) =>
+        [
+          "excluded_market_added",
+          "excluded_market_restored",
+          "excluded_market_reason_updated",
+        ].includes(row.eventType)
+      );
+    },
+    refetchInterval: 30_000,
+  });
   const { data: equityCurveResponse } = useQuery<{
     data: Array<{ ts: string; equity: number }>;
     latest: { equity?: number } | null;
@@ -577,6 +767,19 @@ export default function MarketPerformancePage() {
   const currentPosition = positions.find((position) => position.market === market) ?? null;
   const equityCurve = equityCurveResponse?.data ?? [];
   const equityLatest = equityCurveResponse?.latest;
+  const transitionQuality = transitionQualityRows.find((row) => row.market === market) ?? null;
+  const effectiveRecommendationSettings = recommendationSettings ?? {
+    min_hold_origin_count: 3,
+    exclude_max_hold_to_sell_rate: 0.2,
+    exclude_min_hold_to_hold_rate: 0.6,
+    restore_min_hold_to_sell_rate: 0.4,
+    restore_max_hold_to_hold_rate: 0.35,
+  };
+  const recommendation = getTransitionRecommendation(
+    transitionQuality,
+    isExcluded,
+    effectiveRecommendationSettings
+  );
 
   return (
     <div className="h-screen flex overflow-hidden">
@@ -647,6 +850,14 @@ export default function MarketPerformancePage() {
               <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
                 <div className="space-y-4">
                   <CurrentPositionCard position={currentPosition} />
+                  <ExclusionHistoryCard
+                    isExcluded={isExcluded}
+                    excludedReason={excludedReason}
+                    excludedUpdatedAt={excludedUpdatedAt}
+                    events={operationEvents}
+                    recommendation={recommendation}
+                    transitionQuality={transitionQuality}
+                  />
                   <RecentSignalCard position={currentPosition} signals={signals} />
                   <SignalTimelineCard signals={signals} />
                   <EquityCurveRangeCard market={market} points={equityCurve} latest={equityLatest} />
