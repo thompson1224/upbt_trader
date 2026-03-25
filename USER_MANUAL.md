@@ -446,6 +446,7 @@ http://localhost:3000/performance/market/KRW-BTC
 - 각 코인마다 `제외 사유 메모`를 같이 저장할 수 있습니다.
 - 전환 취약 코인 카드에서 바로 제외한 경우 기본 사유 메모가 자동 입력됩니다.
 - 제외 상태와 사유는 마켓 목록, 포지션 카드, 코인 상세 화면에도 같이 표시됩니다.
+- 제외/복귀/사유 변경은 감사로그에도 코인 단위로 남습니다.
 
 > ⚠️ 웹 UI 저장은 런타임 임시 저장입니다. `backend/.env` 파일 수정이 영구적입니다.
 
@@ -480,6 +481,9 @@ http://localhost:3000/performance/market/KRW-BTC
 - `tp_triggered`
 - `risk_rejected`
 - `loss_streak_reset`
+- `excluded_market_added`
+- `excluded_market_restored`
+- `excluded_market_reason_updated`
 
 ## 6. 자동매매 동작 방식
 

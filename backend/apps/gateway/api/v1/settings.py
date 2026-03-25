@@ -164,6 +164,37 @@ def _parse_excluded_market_items(raw: Optional[Union[bytes, str]]) -> List[Dict[
     return normalized
 
 
+def _diff_excluded_market_items(
+    previous: List[Dict[str, str]],
+    current: List[Dict[str, str]],
+) -> Dict[str, List[Dict[str, str]]]:
+    previous_map = {item["market"]: item for item in previous}
+    current_map = {item["market"]: item for item in current}
+
+    added = [current_map[market] for market in sorted(current_map.keys() - previous_map.keys())]
+    removed = [previous_map[market] for market in sorted(previous_map.keys() - current_map.keys())]
+    reason_changed: List[Dict[str, str]] = []
+
+    for market in sorted(previous_map.keys() & current_map.keys()):
+        previous_reason = previous_map[market].get("reason", "")
+        current_reason = current_map[market].get("reason", "")
+        if previous_reason != current_reason:
+            reason_changed.append(
+                {
+                    "market": market,
+                    "previous_reason": previous_reason,
+                    "reason": current_reason,
+                    "updated_at": current_map[market].get("updated_at", ""),
+                }
+            )
+
+    return {
+        "added": added,
+        "removed": removed,
+        "reason_changed": reason_changed,
+    }
+
+
 # ── Upbit API 키 ────────────────────────────────────────────
 
 @router.post("/secrets/upbit-keys", status_code=204)
@@ -365,15 +396,48 @@ async def set_excluded_markets(req: ExcludedMarketsRequest):
     items = _normalize_excluded_market_items(req)
     r = _get_redis()
     try:
+        previous_raw = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
+        previous_items = _parse_excluded_market_items(previous_raw)
         await r.set(EXCLUDED_MARKETS_REDIS_KEY, json.dumps({"items": items}))
     finally:
         await r.aclose()
+    diff = _diff_excluded_market_items(previous_items, items)
     await record_audit_event(
         event_type="excluded_markets_updated",
         source="settings",
         message=f"Excluded markets updated ({len(items)} markets)",
-        payload={"markets": [item["market"] for item in items], "items": items},
+        payload={
+            "markets": [item["market"] for item in items],
+            "items": items,
+            "added": [item["market"] for item in diff["added"]],
+            "removed": [item["market"] for item in diff["removed"]],
+            "reasonChanged": [item["market"] for item in diff["reason_changed"]],
+        },
     )
+    for item in diff["added"]:
+        await record_audit_event(
+            event_type="excluded_market_added",
+            source="settings",
+            market=item["market"],
+            message=f"Excluded market {item['market']}",
+            payload=item,
+        )
+    for item in diff["removed"]:
+        await record_audit_event(
+            event_type="excluded_market_restored",
+            source="settings",
+            market=item["market"],
+            message=f"Restored market {item['market']}",
+            payload=item,
+        )
+    for item in diff["reason_changed"]:
+        await record_audit_event(
+            event_type="excluded_market_reason_updated",
+            source="settings",
+            market=item["market"],
+            message=f"Updated excluded market reason for {item['market']}",
+            payload=item,
+        )
     return {"markets": [item["market"] for item in items], "items": items}
 
 

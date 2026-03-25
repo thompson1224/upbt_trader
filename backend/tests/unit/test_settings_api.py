@@ -145,6 +145,48 @@ async def test_excluded_markets_roundtrip(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_excluded_markets_emits_diff_audit_events(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    fake_redis.store[settings_module.EXCLUDED_MARKETS_REDIS_KEY] = (
+        '{"items": [{"market": "KRW-BTC", "reason": "old reason", "updated_at": "2026-03-26T00:00:00"}, '
+        '{"market": "KRW-ETH", "reason": "", "updated_at": "2026-03-26T00:00:00"}]}'
+    )
+    events = []
+
+    async def _capture_audit(**kwargs):
+        events.append(kwargs)
+
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", _capture_audit)
+
+    response = await settings_module.set_excluded_markets(
+        settings_module.ExcludedMarketsRequest(
+            items=[
+                settings_module.ExcludedMarketItem(market="KRW-BTC", reason="new reason"),
+                settings_module.ExcludedMarketItem(market="KRW-XRP", reason="weak transitions"),
+            ]
+        )
+    )
+
+    assert response["markets"] == ["KRW-BTC", "KRW-XRP"]
+    assert [event["event_type"] for event in events] == [
+        "excluded_markets_updated",
+        "excluded_market_added",
+        "excluded_market_restored",
+        "excluded_market_reason_updated",
+    ]
+    summary = events[0]
+    assert summary["payload"]["added"] == ["KRW-XRP"]
+    assert summary["payload"]["removed"] == ["KRW-ETH"]
+    assert summary["payload"]["reasonChanged"] == ["KRW-BTC"]
+    assert events[1]["market"] == "KRW-XRP"
+    assert events[2]["market"] == "KRW-ETH"
+    assert events[3]["market"] == "KRW-BTC"
+    assert events[3]["payload"]["previous_reason"] == "old reason"
+    assert events[3]["payload"]["reason"] == "new reason"
+
+
+@pytest.mark.asyncio
 async def test_reset_loss_streak_resets_redis_and_runtime_state(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     persisted = {}
