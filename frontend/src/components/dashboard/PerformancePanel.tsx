@@ -65,7 +65,7 @@ function getTransitionRecommendation(
   row: MarketTransitionQualityRow,
   isExcluded: boolean,
   settings: TransitionRecommendationSettings
-): { label: string; description: string; tone: "red" | "emerald" } | null {
+): { label: string; description: string; tone: "red" | "emerald"; details: string[] } | null {
   const excludeRecommended =
     !isExcluded &&
     row.holdOriginCount >= settings.min_hold_origin_count &&
@@ -76,6 +76,11 @@ function getTransitionRecommendation(
       label: "제외 추천",
       description: "hold→sell 전환이 낮고 hold 유지 비율이 높습니다.",
       tone: "red",
+      details: [
+        `hold 시작 ${row.holdOriginCount}건 / 기준 ${settings.min_hold_origin_count}건 이상`,
+        `hold→sell ${formatPct(row.holdToSellRate)} / 기준 ${formatPct(settings.exclude_max_hold_to_sell_rate)} 이하`,
+        `hold→hold ${formatPct(row.holdToHoldRate)} / 기준 ${formatPct(settings.exclude_min_hold_to_hold_rate)} 이상`,
+      ],
     };
   }
 
@@ -89,6 +94,11 @@ function getTransitionRecommendation(
       label: "복귀 검토",
       description: "hold→sell 전환이 개선돼 재진입 후보로 볼 수 있습니다.",
       tone: "emerald",
+      details: [
+        `hold 시작 ${row.holdOriginCount}건 / 기준 ${settings.min_hold_origin_count}건 이상`,
+        `hold→sell ${formatPct(row.holdToSellRate)} / 기준 ${formatPct(settings.restore_min_hold_to_sell_rate)} 이상`,
+        `hold→hold ${formatPct(row.holdToHoldRate)} / 기준 ${formatPct(settings.restore_max_hold_to_hold_rate)} 이하`,
+      ],
     };
   }
 
@@ -321,7 +331,12 @@ function MarketTransitionQualityList({
                   }
                   return (
                     <div className="mt-1 text-[11px] text-gray-500">
-                      {recommendation.description}
+                      <div>{recommendation.description}</div>
+                      <div className="mt-1 space-y-0.5">
+                        {recommendation.details.map((detail) => (
+                          <div key={detail}>{detail}</div>
+                        ))}
+                      </div>
                     </div>
                   );
                 })()}

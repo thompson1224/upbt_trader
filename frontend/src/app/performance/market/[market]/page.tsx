@@ -148,7 +148,7 @@ function getTransitionRecommendation(
   row: MarketTransitionQualityRow | null,
   isExcluded: boolean,
   settings: TransitionRecommendationSettings
-): { label: string; description: string; tone: "red" | "emerald" } | null {
+): { label: string; description: string; tone: "red" | "emerald"; details: string[] } | null {
   if (!row) {
     return null;
   }
@@ -163,6 +163,11 @@ function getTransitionRecommendation(
       label: "제외 추천",
       description: "hold→sell 전환이 낮고 hold 유지 비율이 높아 운용 제외 후보입니다.",
       tone: "red",
+      details: [
+        `hold 시작 ${row.holdOriginCount}건 / 기준 ${settings.min_hold_origin_count}건 이상`,
+        `hold→sell ${formatPct(row.holdToSellRate)} / 기준 ${formatPct(settings.exclude_max_hold_to_sell_rate)} 이하`,
+        `hold→hold ${formatPct(row.holdToHoldRate)} / 기준 ${formatPct(settings.exclude_min_hold_to_hold_rate)} 이상`,
+      ],
     };
   }
 
@@ -176,6 +181,11 @@ function getTransitionRecommendation(
       label: "복귀 검토",
       description: "hold→sell 전환이 개선돼 자동매매 복귀를 검토할 수 있습니다.",
       tone: "emerald",
+      details: [
+        `hold 시작 ${row.holdOriginCount}건 / 기준 ${settings.min_hold_origin_count}건 이상`,
+        `hold→sell ${formatPct(row.holdToSellRate)} / 기준 ${formatPct(settings.restore_min_hold_to_sell_rate)} 이상`,
+        `hold→hold ${formatPct(row.holdToHoldRate)} / 기준 ${formatPct(settings.restore_max_hold_to_hold_rate)} 이하`,
+      ],
     };
   }
 
@@ -207,7 +217,7 @@ function ExclusionHistoryCard({
   excludedReason: string;
   excludedUpdatedAt: string;
   events: AuditEvent[];
-  recommendation: { label: string; description: string; tone: "red" | "emerald" } | null;
+  recommendation: { label: string; description: string; tone: "red" | "emerald"; details: string[] } | null;
   transitionQuality: MarketTransitionQualityRow | null;
 }) {
   return (
@@ -246,6 +256,11 @@ function ExclusionHistoryCard({
         >
           <div className="font-semibold">{recommendation.label}</div>
           <div className="mt-1">{recommendation.description}</div>
+          <div className="mt-2 space-y-0.5 text-[11px]">
+            {recommendation.details.map((detail) => (
+              <div key={detail}>{detail}</div>
+            ))}
+          </div>
         </div>
       )}
       {transitionQuality && (
