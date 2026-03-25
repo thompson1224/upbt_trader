@@ -47,6 +47,21 @@ export default function PositionPanel() {
               pos.avgEntryPrice > 0
                 ? ((livePrice - pos.avgEntryPrice) / pos.avgEntryPrice) * 100
                 : 0;
+            const latestSignal = pos.latestSignal;
+            const tpGapPct =
+              pos.takeProfit && livePrice > 0
+                ? ((pos.takeProfit - livePrice) / livePrice) * 100
+                : null;
+            const slGapPct =
+              pos.stopLoss && livePrice > 0
+                ? ((livePrice - pos.stopLoss) / livePrice) * 100
+                : null;
+            const pendingReason =
+              pos.takeProfit && livePrice >= pos.takeProfit
+                ? "익절 가격 도달 구간입니다. 체결 동기화 여부를 확인하세요."
+                : pos.stopLoss && livePrice <= pos.stopLoss
+                  ? "손절 가격 도달 구간입니다. 체결 동기화 여부를 확인하세요."
+                  : pos.sellWaitReason;
 
             return (
               <div
@@ -83,6 +98,24 @@ export default function PositionPanel() {
                 <div className="text-gray-600">
                   수량: {pos.qty.toFixed(6)} | 평균: {pos.avgEntryPrice.toLocaleString("ko-KR")} | 현재: {livePrice.toLocaleString("ko-KR")}
                 </div>
+                {latestSignal && (
+                  <div className="mt-0.5 text-gray-500">
+                    최근 신호:
+                    <span
+                      className={cn(
+                        "ml-1 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                        latestSignal.side === "buy" && "bg-emerald-950 text-emerald-300",
+                        latestSignal.side === "sell" && "bg-red-950 text-red-300",
+                        latestSignal.side === "hold" && "bg-slate-800 text-slate-300"
+                      )}
+                    >
+                      {latestSignal.side}
+                    </span>
+                    <span className="ml-2 text-gray-600">
+                      {new Date(latestSignal.ts).toLocaleTimeString("ko-KR")} · {latestSignal.status}
+                    </span>
+                  </div>
+                )}
                 {(pos.stopLoss || pos.takeProfit) && (
                   <div className="text-gray-700 mt-0.5">
                     {pos.stopLoss && (
@@ -93,6 +126,23 @@ export default function PositionPanel() {
                     )}
                   </div>
                 )}
+                {(slGapPct != null || tpGapPct != null) && (
+                  <div className="mt-0.5 text-gray-600">
+                    {slGapPct != null && (
+                      <span className="mr-2">
+                        {slGapPct <= 0 ? "SL 도달" : `SL까지 -${slGapPct.toFixed(2)}%`}
+                      </span>
+                    )}
+                    {tpGapPct != null && (
+                      <span>
+                        {tpGapPct <= 0 ? "TP 도달" : `TP까지 +${tpGapPct.toFixed(2)}%`}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="mt-1 text-[11px] text-gray-500">
+                  매도 대기 사유: {pendingReason}
+                </div>
               </div>
             );
           })

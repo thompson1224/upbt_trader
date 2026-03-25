@@ -366,26 +366,110 @@ def _group_hour_block_performance(trades: list[dict]) -> list[dict]:
     return rows
 
 
+def _serialize_signal(signal: Signal | None) -> dict | None:
+    if signal is None:
+        return None
+    return {
+        "id": signal.id,
+        "strategy_id": signal.strategy_id,
+        "ts": signal.ts.isoformat(),
+        "side": signal.side,
+        "status": signal.status,
+        "final_score": signal.final_score,
+        "confidence": signal.confidence,
+        "rejection_reason": signal.rejection_reason,
+    }
+
+
+def _describe_sell_wait_reason(position: Position, latest_signal: Signal | None) -> tuple[str, str]:
+    if position.source != POSITION_SOURCE_STRATEGY:
+        return (
+            "external_position",
+            "외부 포지션이라 자동 매도 관리 대상이 아닙니다.",
+        )
+    if latest_signal is None:
+        return (
+            "no_recent_signal",
+            "최근 신호가 없어 현재 포지션 보호 규칙만 유지 중입니다.",
+        )
+    if latest_signal.side == "hold":
+        return (
+            "hold_signal",
+            "최근 신호가 hold 라서 매도 조건이 아직 아닙니다.",
+        )
+    if latest_signal.side == "buy":
+        return (
+            "buy_signal",
+            "최근 신호가 buy 라서 포지션 유지 중입니다.",
+        )
+    if latest_signal.status in {"new", "approved"}:
+        return (
+            "sell_signal_pending",
+            "최근 매도 신호가 발생했고 주문 실행 대기 중입니다.",
+        )
+    if latest_signal.status == "executed":
+        return (
+            "sell_signal_executed",
+            "최근 매도 신호는 이미 실행 처리됐고 체결/동기화를 기다리는 상태일 수 있습니다.",
+        )
+    if latest_signal.status == "rejected":
+        reason = latest_signal.rejection_reason or "사유 없음"
+        return (
+            "sell_signal_rejected",
+            f"최근 매도 신호가 거절됐습니다: {reason}",
+        )
+    if latest_signal.status == "expired":
+        return (
+            "sell_signal_expired",
+            "최근 매도 신호가 만료돼 새 신호를 기다리는 중입니다.",
+        )
+    return (
+        "sell_signal_unknown",
+        "최근 매도 신호 상태를 확인하세요.",
+    )
+
+
 @router.get("/positions")
 async def get_positions(db: AsyncSession = Depends(get_db)):
-    stmt = select(Position, Coin.market).join(Coin)
+    stmt = select(Position, Coin.market, Coin.id).join(Coin)
     result = await db.execute(stmt)
     rows = result.all()
-    return [
-        {
-            "id": pos.id,
-            "market": market,
-            "qty": pos.qty,
-            "avg_entry_price": pos.avg_entry_price,
-            "unrealized_pnl": pos.unrealized_pnl,
-            "realized_pnl": pos.realized_pnl,
-            "source": pos.source,
-            "stop_loss": pos.stop_loss,
-            "take_profit": pos.take_profit,
-        }
-        for pos, market in rows
-        if pos.qty > 0
-    ]
+    active_rows = [(pos, market, coin_id) for pos, market, coin_id in rows if pos.qty > 0]
+    if not active_rows:
+        return []
+
+    coin_ids = [coin_id for _pos, _market, coin_id in active_rows]
+    signal_result = await db.execute(
+        select(Signal)
+        .where(Signal.coin_id.in_(coin_ids))
+        .order_by(Signal.coin_id.asc(), Signal.ts.desc())
+    )
+    latest_signal_by_coin_id: dict[int, Signal] = {}
+    for signal in signal_result.scalars():
+        latest_signal_by_coin_id.setdefault(signal.coin_id, signal)
+
+    payload = []
+    for pos, market, coin_id in active_rows:
+        latest_signal = latest_signal_by_coin_id.get(coin_id)
+        reason_code, reason_text = _describe_sell_wait_reason(pos, latest_signal)
+        payload.append(
+            {
+                "id": pos.id,
+                "market": market,
+                "qty": pos.qty,
+                "avg_entry_price": pos.avg_entry_price,
+                "unrealized_pnl": pos.unrealized_pnl,
+                "realized_pnl": pos.realized_pnl,
+                "source": pos.source,
+                "stop_loss": pos.stop_loss,
+                "take_profit": pos.take_profit,
+                "auto_trade_managed": pos.source == POSITION_SOURCE_STRATEGY,
+                "latest_signal": _serialize_signal(latest_signal),
+                "sell_wait_reason_code": reason_code,
+                "sell_wait_reason": reason_text,
+            }
+        )
+    return payload
 
 
 @router.patch("/positions/{market}/auto-trade")

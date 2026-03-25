@@ -78,14 +78,11 @@ export function useSignalWS() {
   const setSignals = useMarketStore((s) => s.setSignals);
 
   useEffect(() => {
-    // 초기 신호 로드: 최근 buy/sell 신호 50개 (hold 제외)
+    // 초기 신호 로드: 최근 신호 50개 (hold 포함)
     const loadInitialSignals = async () => {
       try {
-        const [buyData, sellData] = await Promise.all([
-          api.signals.list({ side: "buy", limit: 25 }),
-          api.signals.list({ side: "sell", limit: 25 }),
-        ]);
-        const combined: SignalData[] = [...buyData, ...sellData].sort(
+        const data = await api.signals.list({ limit: 50 });
+        const combined: SignalData[] = [...data].sort(
           (a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()
         );
         if (combined.length > 0) setSignals(combined.slice(0, 100));
@@ -101,7 +98,7 @@ export function useSignalWS() {
     ws.onmessage = (e) => {
       try {
         const signal = mapSignalData(JSON.parse(e.data));
-        if (signal.side !== "hold") addSignal(signal);
+        addSignal(signal);
       } catch {
         // 무시
       }

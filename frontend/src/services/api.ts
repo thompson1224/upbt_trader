@@ -100,6 +100,19 @@ export const api = {
           source: "strategy" | "external";
           stop_loss: number | null;
           take_profit: number | null;
+          auto_trade_managed: boolean;
+          latest_signal: {
+            id: number;
+            strategy_id: string;
+            ts: string;
+            side: "buy" | "sell" | "hold";
+            status: string;
+            final_score: number;
+            confidence: number;
+            rejection_reason: string | null;
+          } | null;
+          sell_wait_reason_code: string;
+          sell_wait_reason: string;
         }>).map((pos): Position => ({
           id: pos.id,
           market: pos.market,
@@ -110,6 +123,21 @@ export const api = {
           source: pos.source,
           stopLoss: pos.stop_loss,
           takeProfit: pos.take_profit,
+          autoTradeManaged: pos.auto_trade_managed,
+          latestSignal: pos.latest_signal
+            ? {
+                id: pos.latest_signal.id,
+                strategyId: pos.latest_signal.strategy_id,
+                ts: pos.latest_signal.ts,
+                side: pos.latest_signal.side,
+                status: pos.latest_signal.status,
+                finalScore: pos.latest_signal.final_score,
+                confidence: pos.latest_signal.confidence,
+                rejectionReason: pos.latest_signal.rejection_reason,
+              }
+            : null,
+          sellWaitReasonCode: pos.sell_wait_reason_code,
+          sellWaitReason: pos.sell_wait_reason,
         }))
       ),
     equityCurve: (params?: { limit?: number; days?: number }) =>

@@ -269,9 +269,11 @@ type IChartApi = import("lightweight-charts").IChartApi;
 type ISeriesApi = import("lightweight-charts").ISeriesApi<"Area">;
 
 function EquityCurveRangeCard({
+  market,
   points,
   latest,
 }: {
+  market: string;
   points: Array<{ ts: string; equity: number }>;
   latest: { equity?: number } | null | undefined;
 }) {
@@ -353,11 +355,14 @@ function EquityCurveRangeCard({
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-          기간별 자산곡선
+          포트폴리오 자산곡선 참고
         </div>
         <div className="font-mono text-sm text-gray-200">
           {latest?.equity ? `${Math.round(latest.equity).toLocaleString("ko-KR")}원` : "-"}
         </div>
+      </div>
+      <div className="mb-3 text-xs text-gray-600">
+        이 곡선은 {`"${market}"`} 단일 코인 성과가 아니라, 선택 기간의 전체 포트폴리오 자산 흐름입니다.
       </div>
       {points.length === 0 ? (
         <div className="flex h-[220px] items-center justify-center text-sm text-gray-600">
@@ -513,7 +518,7 @@ export default function MarketPerformancePage() {
                 <div className="space-y-4">
                   <CurrentPositionCard position={currentPosition} />
                   <RecentSignalCard position={currentPosition} signals={signals} />
-                  <EquityCurveRangeCard points={equityCurve} latest={equityLatest} />
+                  <EquityCurveRangeCard market={market} points={equityCurve} latest={equityLatest} />
                   <BreakdownCard rows={byExitReason} />
                 </div>
                 <TradesTable trades={trades} />

@@ -23,6 +23,18 @@ export default function OrdersPage() {
   const filtered = orders.filter(
     (o) => sideFilter === "전체" || o.side === sideFilter
   );
+  const { data: recentExecutionEvents = [] } = useQuery({
+    queryKey: ["audit-events", "execution", "recent-blockers"],
+    queryFn: () =>
+      api.audit.list({
+        source: "execution",
+        limit: 20,
+      }),
+    refetchInterval: 10_000,
+  });
+  const blockerEvents = recentExecutionEvents.filter((event) =>
+    ["risk_rejected", "order_failed"].includes(event.eventType)
+  );
 
   return (
     <div className="h-screen flex overflow-hidden">
@@ -31,6 +43,38 @@ export default function OrdersPage() {
         <GlobalHeader />
         <main className="flex-1 overflow-auto p-6">
           <h1 className="text-lg font-bold mb-4">주문 내역</h1>
+
+          <div className="mb-4 rounded-xl border border-gray-800 bg-gray-900 p-4">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+              최근 실행/거절 사유
+            </div>
+            {blockerEvents.length === 0 ? (
+              <div className="text-sm text-gray-600">
+                최근 실행 거절이나 주문 실패 이벤트가 없습니다.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {blockerEvents.slice(0, 5).map((event) => (
+                  <div key={event.id} className="flex items-start justify-between gap-3 text-sm">
+                    <div>
+                      <div className="font-mono text-gray-200">
+                        {event.market ?? "GLOBAL"} · {event.eventType}
+                      </div>
+                      <div className="text-gray-500">{event.message}</div>
+                    </div>
+                    <div className="shrink-0 font-mono text-xs text-gray-600">
+                      {new Date(event.ts).toLocaleString("ko-KR", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="flex gap-4 mb-4">
             <div className="flex gap-1">

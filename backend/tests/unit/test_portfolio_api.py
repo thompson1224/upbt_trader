@@ -50,6 +50,9 @@ class _FakeRowsResult:
     def all(self):
         return self.rows
 
+    def scalars(self):
+        return iter(self.rows)
+
 
 class _FakeDB:
     def __init__(self, coin: Coin, position: Position):
@@ -58,6 +61,7 @@ class _FakeDB:
         self.runtime_states: dict[str, RuntimeState] = {}
         self.committed = False
         self.refreshed = False
+        self.signals = []
 
     async def execute(self, statement):
         entity = statement.column_descriptions[0]["entity"]
@@ -65,6 +69,8 @@ class _FakeDB:
             return _FakeScalarResult(self.coin)
         if entity is Position:
             return _FakeScalarResult(self.position)
+        if entity is portfolio_module.Signal:
+            return _FakeRowsResult(self.signals)
         raise AssertionError(f"Unexpected entity: {entity}")
 
     async def get(self, model, key):
@@ -196,6 +202,64 @@ async def test_set_position_auto_trade_promotes_external_position(monkeypatch: p
     assert db.refreshed is True
     assert runtime_state is not None
     assert runtime_state.value == "strategy"
+
+
+@pytest.mark.asyncio
+async def test_get_positions_includes_latest_signal_and_sell_wait_reason():
+    coin = Coin(
+        id=42,
+        market="KRW-DOGE",
+        base_currency="DOGE",
+        quote_currency="KRW",
+        is_active=True,
+        market_warning=None,
+    )
+    position = Position(
+        id=7,
+        coin_id=42,
+        qty=35.71428571,
+        avg_entry_price=140.0,
+        unrealized_pnl=178.57,
+        realized_pnl=0.0,
+        source="strategy",
+        stop_loss=135.8,
+        take_profit=148.4,
+    )
+
+    class _PositionsDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is Position:
+                return _FakeRowsResult([(position, coin.market, coin.id)])
+            if entity is portfolio_module.Signal:
+                return _FakeRowsResult(
+                    [
+                        portfolio_module.Signal(
+                            id=99,
+                            strategy_id="hybrid_v1",
+                            coin_id=coin.id,
+                            timeframe="1m",
+                            ts=datetime(2026, 3, 25, 10, 0, tzinfo=timezone.utc),
+                            ta_score=0.45,
+                            sentiment_score=0.20,
+                            final_score=0.51,
+                            confidence=0.76,
+                            side="hold",
+                            status="new",
+                            rejection_reason=None,
+                        )
+                    ]
+                )
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+    response = await portfolio_module.get_positions(db=_PositionsDB())
+
+    assert len(response) == 1
+    assert response[0]["market"] == "KRW-DOGE"
+    assert response[0]["auto_trade_managed"] is True
+    assert response[0]["latest_signal"]["side"] == "hold"
+    assert response[0]["sell_wait_reason_code"] == "hold_signal"
+    assert "hold" in response[0]["sell_wait_reason"]
 
 
 def test_build_closed_trades_reconstructs_round_trip_from_fills():

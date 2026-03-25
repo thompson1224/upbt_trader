@@ -48,6 +48,19 @@ export interface Position {
   source: "strategy" | "external";
   stopLoss: number | null;
   takeProfit: number | null;
+  autoTradeManaged: boolean;
+  latestSignal: {
+    id: number;
+    strategyId: string;
+    ts: string;
+    side: "buy" | "sell" | "hold";
+    status: string;
+    finalScore: number;
+    confidence: number;
+    rejectionReason: string | null;
+  } | null;
+  sellWaitReasonCode: string;
+  sellWaitReason: string;
 }
 
 export interface EquityCurvePoint {
