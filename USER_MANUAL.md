@@ -405,6 +405,7 @@ http://localhost:3000/performance/market/KRW-BTC
 - `0.00`이면 비활성
 - 추천 시작값은 `0.60`
 - `manual-test`와 `sell`에는 적용되지 않음
+- 낮은 점수 구간이 실제 손실로 확인될 때 운영자가 바로 필터를 강화하는 용도
 
 **연속 손실 초기화 버튼**:
 - 리스크 가드가 `Max consecutive losses reached: 5`로 신규 매수를 막을 때 사용
