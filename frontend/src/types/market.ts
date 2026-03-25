@@ -19,6 +19,18 @@ export interface MarketInfo {
   is_active: boolean;
   market_warning: string | null;
   excluded: boolean;
+  excluded_reason: string | null;
+}
+
+export interface ExcludedMarketItem {
+  market: string;
+  reason: string;
+  updated_at: string;
+}
+
+export interface ExcludedMarketState {
+  markets: string[];
+  items: ExcludedMarketItem[];
 }
 
 export interface CandleData {

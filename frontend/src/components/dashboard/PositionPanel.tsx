@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
-import type { Position } from "@/types/market";
+import type { ExcludedMarketState, Position } from "@/types/market";
 
 export default function PositionPanel() {
   const { data: positions = [] } = useQuery<Position[]>({
@@ -12,13 +12,16 @@ export default function PositionPanel() {
     queryFn: api.portfolio.positions,
     refetchInterval: 30_000,
   });
-  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+  const { data: excludedMarketState } = useQuery<ExcludedMarketState>({
     queryKey: ["excluded-markets"],
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
   });
   const tickers = useMarketStore((s) => s.tickers);
   const excludedMarkets = excludedMarketState?.markets ?? [];
+  const excludedReasonMap = new Map(
+    (excludedMarketState?.items ?? []).map((item) => [item.market, item.reason] as const)
+  );
   const sortedPositions = [...positions].sort((a, b) => {
     if (a.holdStale !== b.holdStale) {
       return a.holdStale ? -1 : 1;
@@ -75,6 +78,7 @@ export default function PositionPanel() {
                 : pos.stopLoss && livePrice <= pos.stopLoss
                   ? "손절 가격 도달 구간입니다. 체결 동기화 여부를 확인하세요."
                   : pos.sellWaitReason;
+            const excludedReason = excludedReasonMap.get(pos.market) || "";
 
             return (
               <div
@@ -116,6 +120,11 @@ export default function PositionPanel() {
                 <div className="text-gray-600">
                   수량: {pos.qty.toFixed(6)} | 평균: {pos.avgEntryPrice.toLocaleString("ko-KR")} | 현재: {livePrice.toLocaleString("ko-KR")}
                 </div>
+                {excludedMarkets.includes(pos.market) && excludedReason && (
+                  <div className="mt-1 text-[11px] text-red-300">
+                    제외 사유: {excludedReason}
+                  </div>
+                )}
                 {pos.holdStale && pos.holdWarning && (
                   <div className="mt-1 rounded border border-amber-900 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-300">
                     {pos.holdWarning}

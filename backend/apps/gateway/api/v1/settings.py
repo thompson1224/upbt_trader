@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
+from typing import Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
@@ -92,8 +93,75 @@ class HoldStaleMinutesRequest(BaseModel):
     value: int
 
 
+class ExcludedMarketItem(BaseModel):
+    market: str
+    reason: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
 class ExcludedMarketsRequest(BaseModel):
-    markets: list[str]
+    markets: List[str] = []
+    items: List[ExcludedMarketItem] = []
+
+
+def _normalize_excluded_market_items(req: ExcludedMarketsRequest) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    if req.items:
+        for item in req.items:
+            market = item.market.strip().upper()
+            if not market:
+                continue
+            reason = (item.reason or "").strip()
+            items.append(
+                {
+                    "market": market,
+                    "reason": reason[:200],
+                    "updated_at": item.updated_at or datetime.utcnow().isoformat(),
+                }
+            )
+    else:
+        for market in req.markets:
+            normalized = market.strip().upper()
+            if not normalized:
+                continue
+            items.append(
+                {
+                    "market": normalized,
+                    "reason": "",
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
+
+    deduped: Dict[str, Dict[str, str]] = {}
+    for item in items:
+        deduped[item["market"]] = item
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def _parse_excluded_market_items(raw: Optional[Union[bytes, str]]) -> List[Dict[str, str]]:
+    if raw is None:
+        return []
+    decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
+    payload = json.loads(decoded)
+    if isinstance(payload, list):
+        return [
+            {"market": market, "reason": "", "updated_at": ""}
+            for market in sorted({str(item).strip().upper() for item in payload if str(item).strip()})
+        ]
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    normalized: List[Dict[str, str]] = []
+    for item in items:
+        market = str(item.get("market", "")).strip().upper()
+        if not market:
+            continue
+        normalized.append(
+            {
+                "market": market,
+                "reason": str(item.get("reason", "") or "")[:200],
+                "updated_at": str(item.get("updated_at", "") or ""),
+            }
+        )
+    return normalized
 
 
 # ── Upbit API 키 ────────────────────────────────────────────
@@ -294,23 +362,19 @@ async def get_hold_stale_minutes():
 
 @router.patch("/settings/excluded-markets")
 async def set_excluded_markets(req: ExcludedMarketsRequest):
-    normalized = sorted({
-        market.strip().upper()
-        for market in req.markets
-        if isinstance(market, str) and market.strip()
-    })
+    items = _normalize_excluded_market_items(req)
     r = _get_redis()
     try:
-        await r.set(EXCLUDED_MARKETS_REDIS_KEY, json.dumps(normalized))
+        await r.set(EXCLUDED_MARKETS_REDIS_KEY, json.dumps({"items": items}))
     finally:
         await r.aclose()
     await record_audit_event(
         event_type="excluded_markets_updated",
         source="settings",
-        message=f"Excluded markets updated ({len(normalized)} markets)",
-        payload={"markets": normalized},
+        message=f"Excluded markets updated ({len(items)} markets)",
+        payload={"markets": [item["market"] for item in items], "items": items},
     )
-    return {"markets": normalized}
+    return {"markets": [item["market"] for item in items], "items": items}
 
 
 @router.get("/settings/excluded-markets")
@@ -320,9 +384,8 @@ async def get_excluded_markets():
         val = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
     finally:
         await r.aclose()
-    if val is None:
-        return {"markets": []}
-    return {"markets": json.loads(val.decode())}
+    items = _parse_excluded_market_items(val)
+    return {"markets": [item["market"] for item in items], "items": items}
 
 
 @router.post("/settings/risk/reset-loss-streak")

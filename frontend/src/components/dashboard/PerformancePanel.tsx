@@ -6,7 +6,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
-import type { MarketTransitionQualityRow, PerformanceBreakdownRow, PerformanceResponse, PerformanceTrade, SignalTransitionRow } from "@/types/market";
+import type {
+  ExcludedMarketItem,
+  ExcludedMarketState,
+  MarketTransitionQualityRow,
+  PerformanceBreakdownRow,
+  PerformanceResponse,
+  PerformanceTrade,
+  SignalTransitionRow,
+} from "@/types/market";
 
 const RANGE_OPTIONS = [
   { label: "7D", value: 7 },
@@ -283,7 +291,7 @@ export default function PerformancePanel() {
     queryFn: () => api.portfolio.performance({ limit: 100, days: days ?? undefined }),
     refetchInterval: 30_000,
   });
-  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+  const { data: excludedMarketState } = useQuery<ExcludedMarketState>({
     queryKey: ["excluded-markets"],
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
@@ -306,15 +314,23 @@ export default function PerformancePanel() {
   const byTransition = data?.byTransition ?? [];
   const byMarketTransitionQuality = data?.byMarketTransitionQuality ?? [];
   const excludedMarkets = excludedMarketState?.markets ?? [];
+  const excludedItems = excludedMarketState?.items ?? [];
   const trades = data?.trades ?? [];
 
   const handleToggleExcluded = async (market: string) => {
-    const nextMarkets = excludedMarkets.includes(market)
-      ? excludedMarkets.filter((item) => item !== market)
-      : [...excludedMarkets, market].sort();
+    const nextItems: ExcludedMarketItem[] = excludedMarkets.includes(market)
+      ? excludedItems.filter((item) => item.market !== market)
+      : [
+          ...excludedItems,
+          {
+            market,
+            reason: "전환 취약 코인 카드에서 수동 제외",
+            updated_at: new Date().toISOString(),
+          },
+        ].sort((a, b) => a.market.localeCompare(b.market));
     setPendingMarket(market);
     try {
-      await api.settings.setExcludedMarkets(nextMarkets);
+      await api.settings.setExcludedMarkets(nextItems);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["excluded-markets"] }),
         queryClient.invalidateQueries({ queryKey: ["portfolio-performance"] }),

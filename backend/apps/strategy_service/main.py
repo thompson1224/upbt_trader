@@ -103,7 +103,11 @@ class StrategyRunner:
             return set()
         try:
             decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
-            return {market.upper() for market in json.loads(decoded)}
+            payload = json.loads(decoded)
+            if isinstance(payload, list):
+                return {market.upper() for market in payload}
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            return {str(item.get("market", "")).upper() for item in items if str(item.get("market", "")).strip()}
         except Exception:
             logger.warning("Invalid excluded market payload, ignoring")
             return set()

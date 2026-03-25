@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
 import { cn } from "@/utils/cn";
+import type { ExcludedMarketState } from "@/types/market";
 
 const TOP_MARKETS = [
   "KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL",
@@ -13,7 +14,7 @@ export default function MarketWatchlist() {
   const tickers = useMarketStore((s) => s.tickers);
   const selectedMarket = useMarketStore((s) => s.selectedMarket);
   const setSelectedMarket = useMarketStore((s) => s.setSelectedMarket);
-  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+  const { data: excludedMarketState } = useQuery<ExcludedMarketState>({
     queryKey: ["excluded-markets"],
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,

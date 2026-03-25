@@ -11,6 +11,7 @@ class CoinResponse(BaseModel):
     is_active: bool
     market_warning: Optional[str]
     excluded: bool = False
+    excluded_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

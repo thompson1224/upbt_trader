@@ -38,10 +38,26 @@ async def get_markets(
         raw = await r.get(EXCLUDED_MARKETS_REDIS_KEY)
     finally:
         await r.aclose()
-    excluded = set(json.loads(raw.decode())) if raw is not None else set()
+    excluded_reason_map: dict[str, str] = {}
+    if raw is not None:
+        payload = json.loads(raw.decode())
+        if isinstance(payload, list):
+            excluded_reason_map = {market: "" for market in payload}
+        elif isinstance(payload, dict):
+            excluded_reason_map = {
+                str(item.get("market", "")).upper(): str(item.get("reason", "") or "")
+                for item in payload.get("items", [])
+                if str(item.get("market", "")).strip()
+            }
+    excluded = set(excluded_reason_map.keys())
 
     return [
-        CoinResponse.model_validate(coin).model_copy(update={"excluded": coin.market in excluded})
+        CoinResponse.model_validate(coin).model_copy(
+            update={
+                "excluded": coin.market in excluded,
+                "excluded_reason": excluded_reason_map.get(coin.market),
+            }
+        )
         for coin in markets
     ]
 

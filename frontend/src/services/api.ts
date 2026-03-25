@@ -1,6 +1,13 @@
 import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
-import type { AuditEvent, MarketInfo, PerformanceResponse, Position } from "@/types/market";
+import type {
+  AuditEvent,
+  ExcludedMarketItem,
+  ExcludedMarketState,
+  MarketInfo,
+  PerformanceResponse,
+  Position,
+} from "@/types/market";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -243,10 +250,10 @@ export const api = {
       apiClient.patch("/settings/hold-stale-minutes", { value }).then((r) => r.data as { value: number }),
     getHoldStaleMinutes: () =>
       apiClient.get("/settings/hold-stale-minutes").then((r) => r.data as { value: number }),
-    setExcludedMarkets: (markets: string[]) =>
-      apiClient.patch("/settings/excluded-markets", { markets }).then((r) => r.data as { markets: string[] }),
+    setExcludedMarkets: (items: ExcludedMarketItem[]) =>
+      apiClient.patch("/settings/excluded-markets", { items }).then((r) => r.data as ExcludedMarketState),
     getExcludedMarkets: () =>
-      apiClient.get("/settings/excluded-markets").then((r) => r.data as { markets: string[] }),
+      apiClient.get("/settings/excluded-markets").then((r) => r.data as ExcludedMarketState),
     resetLossStreak: () =>
       apiClient.post("/settings/risk/reset-loss-streak").then((r) => r.data as {
         lossStreak: number;

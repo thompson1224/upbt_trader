@@ -137,8 +137,11 @@ async def test_excluded_markets_roundtrip(monkeypatch: pytest.MonkeyPatch):
     )
     current = await settings_module.get_excluded_markets()
 
-    assert response == {"markets": ["KRW-BTC", "KRW-ETH"]}
-    assert current == {"markets": ["KRW-BTC", "KRW-ETH"]}
+    assert response["markets"] == ["KRW-BTC", "KRW-ETH"]
+    assert [item["market"] for item in response["items"]] == ["KRW-BTC", "KRW-ETH"]
+    assert [item["reason"] for item in response["items"]] == ["", ""]
+    assert all(item["updated_at"] for item in response["items"])
+    assert current == response
 
 
 @pytest.mark.asyncio

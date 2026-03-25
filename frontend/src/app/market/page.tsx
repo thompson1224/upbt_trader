@@ -56,11 +56,11 @@ export default function MarketPage() {
                   className="bg-gray-900 rounded-xl border border-gray-800 p-4 hover:border-emerald-500/50 transition-colors text-left"
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-sm">
-                        {m.market.replace("KRW-", "")}
-                      </span>
-                      {m.excluded && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-sm">
+                      {m.market.replace("KRW-", "")}
+                    </span>
+                    {m.excluded && (
                         <span className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide bg-red-950 text-red-300">
                           excluded
                         </span>
@@ -74,6 +74,11 @@ export default function MarketPage() {
                       ) : null
                     )}
                   </div>
+                  {m.excluded && m.excluded_reason && (
+                    <div className="mb-2 text-[11px] text-red-300 line-clamp-2">
+                      {m.excluded_reason}
+                    </div>
+                  )}
                   {ticker ? (
                     <>
                       <div className="font-mono text-sm">

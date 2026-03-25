@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/services/api";
-import type { MarketInfo } from "@/types/market";
+import type { ExcludedMarketItem, MarketInfo } from "@/types/market";
 import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert, RotateCcw } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
@@ -16,7 +16,7 @@ export default function SettingsPage() {
   const [minBuyFinalScore, setMinBuyFinalScore] = useState("0.00");
   const [holdStaleMinutes, setHoldStaleMinutes] = useState("180");
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
-  const [excludedMarkets, setExcludedMarkets] = useState<string[]>([]);
+  const [excludedMarkets, setExcludedMarkets] = useState<ExcludedMarketItem[]>([]);
   const [loadingProtection, setLoadingProtection] = useState(true);
   const [resettingLossStreak, setResettingLossStreak] = useState(false);
   const [lossStreakResetStatus, setLossStreakResetStatus] = useState<"idle" | "success" | "error">("idle");
@@ -33,7 +33,7 @@ export default function SettingsPage() {
       .getHoldStaleMinutes()
       .then(({ value }) => setHoldStaleMinutes(String(value)));
     api.markets.list().then(setMarkets);
-    api.settings.getExcludedMarkets().then(({ markets }) => setExcludedMarkets(markets));
+    api.settings.getExcludedMarkets().then(({ items }) => setExcludedMarkets(items));
   }, []);
 
   const handleSave = async () => {
@@ -74,9 +74,19 @@ export default function SettingsPage() {
 
   const toggleExcludedMarket = (market: string) => {
     setExcludedMarkets((current) =>
-      current.includes(market)
-        ? current.filter((item) => item !== market)
-        : [...current, market].sort()
+      current.some((item) => item.market === market)
+        ? current.filter((item) => item.market !== market)
+        : [...current, { market, reason: "", updated_at: new Date().toISOString() }].sort((a, b) => a.market.localeCompare(b.market))
+    );
+  };
+
+  const updateExcludedMarketReason = (market: string, reason: string) => {
+    setExcludedMarkets((current) =>
+      current.map((item) =>
+        item.market === market
+          ? { ...item, reason, updated_at: new Date().toISOString() }
+          : item
+      )
     );
   };
 
@@ -176,9 +186,10 @@ export default function SettingsPage() {
             </div>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
               {markets.map((market) => {
-                const checked = excludedMarkets.includes(market.market);
+                const excludedItem = excludedMarkets.find((item) => item.market === market.market);
+                const checked = Boolean(excludedItem);
                 return (
-                  <label
+                  <div
                     key={market.market}
                     className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
                       checked ? "border-red-500/50 bg-red-950/30 text-red-200" : "border-gray-800 bg-gray-950/40 text-gray-300"
@@ -190,8 +201,19 @@ export default function SettingsPage() {
                       onChange={() => toggleExcludedMarket(market.market)}
                       className="accent-red-500"
                     />
-                    <span className="font-mono">{market.market}</span>
-                  </label>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono">{market.market}</div>
+                      {checked && (
+                        <input
+                          type="text"
+                          value={excludedItem?.reason ?? ""}
+                          onChange={(e) => updateExcludedMarketReason(market.market, e.target.value)}
+                          placeholder="제외 사유 메모"
+                          className="mt-2 w-full bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-red-400"
+                        />
+                      )}
+                    </div>
+                  </div>
                 );
               })}
             </div>

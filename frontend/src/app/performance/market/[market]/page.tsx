@@ -9,7 +9,14 @@ import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
-import type { PerformanceBreakdownRow, PerformanceResponse, PerformanceTrade, Position, SignalData } from "@/types/market";
+import type {
+  ExcludedMarketState,
+  PerformanceBreakdownRow,
+  PerformanceResponse,
+  PerformanceTrade,
+  Position,
+  SignalData,
+} from "@/types/market";
 
 const RANGE_OPTIONS = [
   { label: "7D", value: 7 },
@@ -531,12 +538,13 @@ export default function MarketPerformancePage() {
   const params = useParams<{ market: string }>();
   const market = decodeURIComponent(params.market);
   const [days, setDays] = useState<number | null>(30);
-  const { data: excludedMarketState } = useQuery<{ markets: string[] }>({
+  const { data: excludedMarketState } = useQuery<ExcludedMarketState>({
     queryKey: ["excluded-markets"],
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
   });
   const excludedMarkets = excludedMarketState?.markets ?? [];
+  const excludedReason = excludedMarketState?.items.find((item) => item.market === market)?.reason ?? "";
   const isExcluded = excludedMarkets.includes(market);
 
   const { data, isLoading } = useQuery<PerformanceResponse>({
@@ -594,6 +602,11 @@ export default function MarketPerformancePage() {
               {isExcluded && (
                 <div className="mt-2 text-xs text-red-300">
                   현재 이 코인은 자동매매 신호 생성 대상에서 제외돼 있습니다.
+                </div>
+              )}
+              {isExcluded && excludedReason && (
+                <div className="mt-1 text-xs text-red-400">
+                  제외 사유: {excludedReason}
                 </div>
               )}
             </div>
