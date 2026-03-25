@@ -478,6 +478,85 @@ def test_build_closed_trades_reconstructs_round_trip_from_fills():
     assert trades[0]["strategyId"] == "hybrid_v1"
 
 
+def test_build_closed_trades_splits_reentry_and_partial_exit_fifo():
+    fills = [
+        {
+            "market": "KRW-BTC",
+            "side": "bid",
+            "price": 100.0,
+            "volume": 1.0,
+            "fee": 0.10,
+            "filledAt": datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
+            "signal": None,
+            "strategyId": "entry_a",
+            "taScore": 0.40,
+            "sentimentScore": 0.10,
+            "finalScore": 0.35,
+            "confidence": 0.80,
+        },
+        {
+            "market": "KRW-BTC",
+            "side": "ask",
+            "price": 110.0,
+            "volume": 0.5,
+            "fee": 0.05,
+            "filledAt": datetime(2026, 3, 25, 0, 30, tzinfo=timezone.utc),
+            "signal": None,
+            "orderReason": "sell signal",
+            "strategyId": None,
+            "taScore": None,
+            "sentimentScore": None,
+            "finalScore": None,
+            "confidence": None,
+        },
+        {
+            "market": "KRW-BTC",
+            "side": "bid",
+            "price": 120.0,
+            "volume": 1.0,
+            "fee": 0.12,
+            "filledAt": datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc),
+            "signal": None,
+            "strategyId": "entry_b",
+            "taScore": 0.55,
+            "sentimentScore": 0.20,
+            "finalScore": 0.48,
+            "confidence": 0.90,
+        },
+        {
+            "market": "KRW-BTC",
+            "side": "ask",
+            "price": 130.0,
+            "volume": 1.5,
+            "fee": 0.15,
+            "filledAt": datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+            "signal": None,
+            "orderReason": "TP triggered: 130 >= 127",
+            "strategyId": None,
+            "taScore": None,
+            "sentimentScore": None,
+            "finalScore": None,
+            "confidence": None,
+        },
+    ]
+
+    trades = portfolio_module._build_closed_trades(fills)
+
+    assert len(trades) == 3
+    # exitTs desc order
+    assert [trade["strategyId"] for trade in trades] == ["entry_a", "entry_b", "entry_a"]
+    assert [trade["qty"] for trade in trades] == pytest.approx([0.5, 1.0, 0.5])
+    assert trades[0]["entryPrice"] == pytest.approx(100.0)
+    assert trades[0]["exitPrice"] == pytest.approx(130.0)
+    assert trades[0]["exitReason"] == "take_profit"
+    assert trades[1]["entryPrice"] == pytest.approx(120.0)
+    assert trades[1]["exitPrice"] == pytest.approx(130.0)
+    assert trades[1]["strategyId"] == "entry_b"
+    assert trades[2]["entryPrice"] == pytest.approx(100.0)
+    assert trades[2]["exitPrice"] == pytest.approx(110.0)
+    assert trades[2]["exitReason"] == "protection"
+
+
 def test_summarize_performance_computes_profit_factor_and_drawdown():
     trades = [
         {
@@ -628,6 +707,27 @@ def test_group_market_transition_quality_flags_hold_heavy_markets():
     assert rows[0]["holdToHoldRate"] == pytest.approx(1.0)
     assert rows[1]["market"] == "KRW-BTC"
     assert rows[1]["holdToSellRate"] == pytest.approx(0.5)
+
+
+def test_get_market_transition_quality_returns_default_for_unknown_market():
+    row = portfolio_module._get_market_transition_quality(
+        [
+            {"market": "KRW-BTC", "side": "buy", "ts": datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc)},
+            {"market": "KRW-BTC", "side": "hold", "ts": datetime(2026, 3, 25, 0, 10, tzinfo=timezone.utc)},
+        ],
+        "KRW-ETH",
+    )
+
+    assert row == {
+        "market": "KRW-ETH",
+        "totalTransitions": 0,
+        "holdOriginCount": 0,
+        "holdToSellCount": 0,
+        "holdToHoldCount": 0,
+        "holdToBuyCount": 0,
+        "holdToSellRate": 0.0,
+        "holdToHoldRate": 0.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -844,6 +944,84 @@ async def test_get_portfolio_performance_filters_by_market(monkeypatch: pytest.M
     assert response["summary"]["totalTrades"] == 1
     assert response["trades"][0]["market"] == "KRW-ETH"
     assert portfolio_module._performance_cache_key(50, None, "KRW-ETH") in fake_redis.values
+
+
+@pytest.mark.asyncio
+async def test_get_market_transition_quality_filters_single_market():
+    eth_buy = SimpleNamespace(
+        id=1,
+        coin_id=1,
+        strategy_id="hybrid_v1",
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
+        ta_score=0.4,
+        sentiment_score=0.2,
+        final_score=0.3,
+        confidence=0.8,
+        side="buy",
+        status="executed",
+    )
+    eth_hold = SimpleNamespace(
+        id=2,
+        coin_id=1,
+        strategy_id="hybrid_v1",
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 0, 10, tzinfo=timezone.utc),
+        ta_score=0.2,
+        sentiment_score=0.1,
+        final_score=0.1,
+        confidence=0.7,
+        side="hold",
+        status="executed",
+    )
+    eth_sell = SimpleNamespace(
+        id=3,
+        coin_id=1,
+        strategy_id="hybrid_v1",
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 0, 20, tzinfo=timezone.utc),
+        ta_score=-0.4,
+        sentiment_score=-0.1,
+        final_score=-0.3,
+        confidence=0.9,
+        side="sell",
+        status="executed",
+    )
+    btc_buy = SimpleNamespace(
+        id=4,
+        coin_id=2,
+        strategy_id="hybrid_v1",
+        timeframe="1m",
+        ts=datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc),
+        ta_score=0.5,
+        sentiment_score=0.2,
+        final_score=0.4,
+        confidence=0.9,
+        side="buy",
+        status="executed",
+    )
+
+    class _TransitionDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            assert entity is portfolio_module.Signal
+            return _FakeRowsResult(
+                [
+                    (eth_buy, "KRW-ETH"),
+                    (eth_hold, "KRW-ETH"),
+                    (eth_sell, "KRW-ETH"),
+                    (btc_buy, "KRW-BTC"),
+                ]
+            )
+
+    response = await portfolio_module.get_market_transition_quality("krw-eth", db=_TransitionDB())
+
+    assert response["market"] == "KRW-ETH"
+    assert response["totalTransitions"] == 2
+    assert response["holdOriginCount"] == 1
+    assert response["holdToSellCount"] == 1
+    assert response["holdToHoldCount"] == 0
+    assert response["holdToSellRate"] == pytest.approx(1.0)
 
 
 async def _noop():

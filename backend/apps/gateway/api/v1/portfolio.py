@@ -91,7 +91,7 @@ def _infer_exit_reason(signal: Signal | None, order_reason: str | None) -> str:
 
 
 def _build_closed_trades(fill_rows: list[dict]) -> list[dict]:
-    states: dict[str, dict] = {}
+    open_lots: dict[str, list[dict]] = defaultdict(list)
     trades: list[dict] = []
 
     for row in fill_rows:
@@ -103,82 +103,78 @@ def _build_closed_trades(fill_rows: list[dict]) -> list[dict]:
         filled_at = row["filledAt"]
 
         if side == "bid":
-            state = states.setdefault(
-                market,
+            open_lots[market].append(
                 {
-                    "entryQty": 0.0,
-                    "remainingQty": 0.0,
-                    "entryFunds": 0.0,
-                    "entryFee": 0.0,
+                    "remainingQty": volume,
+                    "remainingFunds": price * volume,
+                    "remainingFee": fee,
                     "entryTs": filled_at,
                     "strategyId": row.get("strategyId"),
                     "taScore": row.get("taScore"),
                     "sentimentScore": row.get("sentimentScore"),
                     "finalScore": row.get("finalScore"),
                     "confidence": row.get("confidence"),
-                },
+                }
             )
-            state["entryQty"] += volume
-            state["remainingQty"] += volume
-            state["entryFunds"] += price * volume
-            state["entryFee"] += fee
-            if filled_at < state["entryTs"]:
-                state["entryTs"] = filled_at
             continue
 
-        state = states.get(market)
-        if state is None or state["remainingQty"] <= 0:
+        lots = open_lots.get(market)
+        if not lots or volume <= 0:
             continue
 
-        matched_qty = min(volume, state["remainingQty"])
-        if matched_qty <= 0:
-            continue
-
-        exit_qty = state.get("exitQty", 0.0) + matched_qty
-        exit_funds = state.get("exitFunds", 0.0) + (price * matched_qty)
-        exit_fee = state.get("exitFee", 0.0) + (fee * (matched_qty / max(volume, 1e-12)))
-        state["exitQty"] = exit_qty
-        state["exitFunds"] = exit_funds
-        state["exitFee"] = exit_fee
-        state["exitTs"] = filled_at
-        state["exitReason"] = _infer_exit_reason(
+        remaining_exit_qty = volume
+        exit_reason = _infer_exit_reason(
             row.get("signal"),
             row.get("orderReason"),
         )
-        state["remainingQty"] -= matched_qty
 
-        if state["remainingQty"] <= 1e-9 or isclose(state["remainingQty"], 0.0, abs_tol=1e-9):
-            entry_qty = state["entryQty"]
-            entry_funds = state["entryFunds"]
-            entry_fee = state["entryFee"]
+        while lots and remaining_exit_qty > 1e-9 and not isclose(remaining_exit_qty, 0.0, abs_tol=1e-9):
+            lot = lots[0]
+            lot_qty = lot["remainingQty"]
+            if lot_qty <= 1e-9 or isclose(lot_qty, 0.0, abs_tol=1e-9):
+                lots.pop(0)
+                continue
+
+            matched_qty = min(remaining_exit_qty, lot_qty)
+            matched_ratio = matched_qty / max(lot_qty, 1e-12)
+            entry_funds = lot["remainingFunds"] * matched_ratio
+            entry_fee = lot["remainingFee"] * matched_ratio
+            exit_funds = price * matched_qty
+            exit_fee = fee * (matched_qty / max(volume, 1e-12))
             gross_pnl = exit_funds - entry_funds
             net_pnl = gross_pnl - entry_fee - exit_fee
             trades.append(
                 {
                     "market": market,
-                    "entryTs": state["entryTs"].isoformat(),
-                    "exitTs": state["exitTs"].isoformat(),
-                    "entryPrice": entry_funds / max(entry_qty, 1e-12),
-                    "exitPrice": exit_funds / max(exit_qty, 1e-12),
-                    "qty": entry_qty,
+                    "entryTs": lot["entryTs"].isoformat(),
+                    "exitTs": filled_at.isoformat(),
+                    "entryPrice": entry_funds / max(matched_qty, 1e-12),
+                    "exitPrice": exit_funds / max(matched_qty, 1e-12),
+                    "qty": matched_qty,
                     "entryFee": entry_fee,
                     "exitFee": exit_fee,
                     "grossPnl": gross_pnl,
                     "netPnl": net_pnl,
                     "returnPct": (net_pnl / entry_funds) if entry_funds else 0.0,
                     "holdMinutes": max(
-                        (state["exitTs"] - state["entryTs"]).total_seconds() / 60.0,
+                        (filled_at - lot["entryTs"]).total_seconds() / 60.0,
                         0.0,
                     ),
-                    "exitReason": state.get("exitReason", "system"),
-                    "strategyId": state.get("strategyId"),
-                    "taScore": state.get("taScore"),
-                    "sentimentScore": state.get("sentimentScore"),
-                    "finalScore": state.get("finalScore"),
-                    "confidence": state.get("confidence"),
+                    "exitReason": exit_reason,
+                    "strategyId": lot.get("strategyId"),
+                    "taScore": lot.get("taScore"),
+                    "sentimentScore": lot.get("sentimentScore"),
+                    "finalScore": lot.get("finalScore"),
+                    "confidence": lot.get("confidence"),
                 }
             )
-            del states[market]
+            lot["remainingQty"] -= matched_qty
+            lot["remainingFunds"] -= entry_funds
+            lot["remainingFee"] -= entry_fee
+            remaining_exit_qty -= matched_qty
+
+            if lot["remainingQty"] <= 1e-9 or isclose(lot["remainingQty"], 0.0, abs_tol=1e-9):
+                lots.pop(0)
 
     trades.sort(key=lambda trade: trade["exitTs"], reverse=True)
     return trades
@@ -459,6 +455,26 @@ def _group_market_transition_quality(signal_rows: list[dict]) -> list[dict]:
         )
     )
     return rows
+
+
+def _get_market_transition_quality(
+    signal_rows: list[dict],
+    market: str,
+) -> dict:
+    rows = _group_market_transition_quality(signal_rows)
+    for row in rows:
+        if row["market"] == market:
+            return row
+    return {
+        "market": market,
+        "totalTransitions": 0,
+        "holdOriginCount": 0,
+        "holdToSellCount": 0,
+        "holdToHoldCount": 0,
+        "holdToBuyCount": 0,
+        "holdToSellRate": 0.0,
+        "holdToHoldRate": 0.0,
+    }
 
 
 def _serialize_signal(signal: Signal | None) -> dict | None:
@@ -867,3 +883,28 @@ async def get_portfolio_performance(
         if redis_client is not None:
             await redis_client.aclose()
     return payload
+
+
+@router.get("/portfolio/transition-quality/{market}")
+async def get_market_transition_quality(
+    market: str,
+    days: Optional[int] = Query(None, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    normalized_market = market.upper()
+    signal_stmt = (
+        select(Signal, Coin.market)
+        .join(Coin, Signal.coin_id == Coin.id)
+        .where(Coin.market == normalized_market)
+        .order_by(Signal.coin_id.asc(), Signal.ts.asc())
+    )
+    if isinstance(days, int):
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        signal_stmt = signal_stmt.where(Signal.ts >= cutoff)
+
+    signal_result = await db.execute(signal_stmt)
+    signal_rows = [
+        {"signal": signal, "market": market_code, "ts": signal.ts, "side": signal.side}
+        for signal, market_code in signal_result.all()
+    ]
+    return _get_market_transition_quality(signal_rows, normalized_market)

@@ -306,6 +306,12 @@ http://localhost:3000/performance/market/KRW-BTC
   - TA / 감성 / final score / confidence
   - 최근 5개 신호
   - 현재 포지션과 최근 신호의 방향 해석
+- 신호 전환 품질
+  - `hold→sell`
+  - `hold→hold`
+  - `hold` 시작 건수
+  - 전체 전환 수
+  - 코인 상세 화면은 이 값을 해당 코인 전용 API로 직접 조회합니다
 - 제외 상태
   - `excluded` 배지
   - 제외 중이면 현재 제외 사유 메모 표시
@@ -871,6 +877,7 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/positions` | 포지션 현황 | `latest_signal`, `latest_sell_signal`, `sell_wait_reason`, `SL/TP 거리` 포함 |
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | `limit`, `days` |
 | GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
+| GET | `/api/v1/portfolio/transition-quality/{market}` | 특정 코인의 신호 전환 품질 | `days` |
 | GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `market`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |

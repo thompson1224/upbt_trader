@@ -5,6 +5,7 @@ import type {
   ExcludedMarketItem,
   ExcludedMarketState,
   MarketInfo,
+  MarketTransitionQualityRow,
   PerformanceResponse,
   Position,
   TransitionRecommendationSettings,
@@ -218,6 +219,14 @@ export const api = {
           },
         })
         .then((r) => r.data as PerformanceResponse),
+    transitionQuality: (market: string, params?: { days?: number }) =>
+      apiClient
+        .get(`/portfolio/transition-quality/${market}`, {
+          params: {
+            days: params?.days,
+          },
+        })
+        .then((r) => r.data as MarketTransitionQualityRow),
   },
   backtests: {
     create: (payload: object) =>

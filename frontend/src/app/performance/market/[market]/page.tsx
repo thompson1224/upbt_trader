@@ -740,12 +740,9 @@ export default function MarketPerformancePage() {
     queryFn: () => api.signals.list({ market, limit: 20 }),
     refetchInterval: 30_000,
   });
-  const { data: transitionQualityRows = [] } = useQuery<MarketTransitionQualityRow[]>({
-    queryKey: ["portfolio-performance-transition-quality", days],
-    queryFn: async () => {
-      const response = await api.portfolio.performance({ limit: 100, days: days ?? undefined });
-      return response.byMarketTransitionQuality ?? [];
-    },
+  const { data: transitionQuality } = useQuery<MarketTransitionQualityRow>({
+    queryKey: ["portfolio-transition-quality", market, days],
+    queryFn: () => api.portfolio.transitionQuality(market, { days: days ?? undefined }),
     refetchInterval: 30_000,
   });
   const { data: recommendationSettings } = useQuery<TransitionRecommendationSettings>({
@@ -782,7 +779,7 @@ export default function MarketPerformancePage() {
   const currentPosition = positions.find((position) => position.market === market) ?? null;
   const equityCurve = equityCurveResponse?.data ?? [];
   const equityLatest = equityCurveResponse?.latest;
-  const transitionQuality = transitionQualityRows.find((row) => row.market === market) ?? null;
+  const transitionQualityRow = transitionQuality ?? null;
   const effectiveRecommendationSettings = recommendationSettings ?? {
     min_hold_origin_count: 3,
     exclude_max_hold_to_sell_rate: 0.2,
@@ -791,7 +788,7 @@ export default function MarketPerformancePage() {
     restore_max_hold_to_hold_rate: 0.35,
   };
   const recommendation = getTransitionRecommendation(
-    transitionQuality,
+    transitionQualityRow,
     isExcluded,
     effectiveRecommendationSettings
   );
@@ -871,7 +868,7 @@ export default function MarketPerformancePage() {
                     excludedUpdatedAt={excludedUpdatedAt}
                     events={operationEvents}
                     recommendation={recommendation}
-                    transitionQuality={transitionQuality}
+                    transitionQuality={transitionQualityRow}
                   />
                   <RecentSignalCard position={currentPosition} signals={signals} />
                   <SignalTimelineCard signals={signals} />
