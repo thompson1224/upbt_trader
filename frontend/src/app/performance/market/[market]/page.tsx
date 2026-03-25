@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
@@ -265,6 +265,111 @@ function RecentSignalCard({
   );
 }
 
+type IChartApi = import("lightweight-charts").IChartApi;
+type ISeriesApi = import("lightweight-charts").ISeriesApi<"Area">;
+
+function EquityCurveRangeCard({
+  points,
+  latest,
+}: {
+  points: Array<{ ts: string; equity: number }>;
+  latest: { equity?: number } | null | undefined;
+}) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const areaSeriesRef = useRef<ISeriesApi | null>(null);
+
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+
+    let removeResizeObserver: (() => void) | undefined;
+
+    import("lightweight-charts").then(({ createChart, AreaSeries, ColorType }) => {
+      if (!chartContainerRef.current) return;
+
+      const chart = createChart(chartContainerRef.current, {
+        layout: {
+          background: { type: ColorType.Solid, color: "#111827" },
+          textColor: "#6b7280",
+        },
+        grid: {
+          vertLines: { color: "#17202e" },
+          horzLines: { color: "#17202e" },
+        },
+        rightPriceScale: {
+          borderColor: "#243041",
+          scaleMargins: { top: 0.2, bottom: 0.18 },
+        },
+        timeScale: {
+          borderColor: "#243041",
+          timeVisible: true,
+        },
+        crosshair: { mode: 0 },
+        width: chartContainerRef.current.clientWidth,
+        height: 220,
+      });
+
+      const series = chart.addSeries(AreaSeries, {
+        lineColor: "#38bdf8",
+        topColor: "rgba(56, 189, 248, 0.24)",
+        bottomColor: "rgba(56, 189, 248, 0.02)",
+        lineWidth: 2,
+      });
+
+      chartRef.current = chart;
+      areaSeriesRef.current = series;
+
+      const resizeObserver = new ResizeObserver(() => {
+        if (!chartContainerRef.current) return;
+        chart.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: 220,
+        });
+      });
+      resizeObserver.observe(chartContainerRef.current);
+      removeResizeObserver = () => resizeObserver.disconnect();
+    });
+
+    return () => {
+      removeResizeObserver?.();
+      chartRef.current?.remove();
+      chartRef.current = null;
+      areaSeriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!areaSeriesRef.current) return;
+    areaSeriesRef.current.setData(
+      points.map((point) => ({
+        time: (new Date(point.ts).getTime() / 1000) as import("lightweight-charts").Time,
+        value: point.equity,
+      }))
+    );
+    chartRef.current?.timeScale().fitContent();
+  }, [points]);
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          기간별 자산곡선
+        </div>
+        <div className="font-mono text-sm text-gray-200">
+          {latest?.equity ? `${Math.round(latest.equity).toLocaleString("ko-KR")}원` : "-"}
+        </div>
+      </div>
+      {points.length === 0 ? (
+        <div className="flex h-[220px] items-center justify-center text-sm text-gray-600">
+          곡선 데이터 없음
+        </div>
+      ) : (
+        <div ref={chartContainerRef} className="h-[220px] w-full" />
+      )}
+    </div>
+  );
+}
+
 function TradesTable({ trades }: { trades: PerformanceTrade[] }) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900">
@@ -339,11 +444,21 @@ export default function MarketPerformancePage() {
     queryFn: () => api.signals.list({ market, limit: 5 }),
     refetchInterval: 30_000,
   });
+  const { data: equityCurveResponse } = useQuery<{
+    data: Array<{ ts: string; equity: number }>;
+    latest: { equity?: number } | null;
+  }>({
+    queryKey: ["equity-curve", days],
+    queryFn: () => api.portfolio.equityCurve({ limit: 300, days: days ?? undefined }),
+    refetchInterval: 30_000,
+  });
 
   const summary = data?.summary;
   const trades = data?.trades ?? [];
   const byExitReason = data?.byExitReason ?? [];
   const currentPosition = positions.find((position) => position.market === market) ?? null;
+  const equityCurve = equityCurveResponse?.data ?? [];
+  const equityLatest = equityCurveResponse?.latest;
 
   return (
     <div className="h-screen flex overflow-hidden">
@@ -398,6 +513,7 @@ export default function MarketPerformancePage() {
                 <div className="space-y-4">
                   <CurrentPositionCard position={currentPosition} />
                   <RecentSignalCard position={currentPosition} signals={signals} />
+                  <EquityCurveRangeCard points={equityCurve} latest={equityLatest} />
                   <BreakdownCard rows={byExitReason} />
                 </div>
                 <TradesTable trades={trades} />

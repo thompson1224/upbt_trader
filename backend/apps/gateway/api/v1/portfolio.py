@@ -315,7 +315,14 @@ async def set_position_auto_trade(
 
 
 @router.get("/portfolio/equity-curve")
-async def get_equity_curve(limit: int = Query(100, ge=1, le=500)):
+async def get_equity_curve(
+    limit: int = Query(100, ge=1, le=500),
+    days: Optional[int] = Query(None, ge=1, le=365),
+):
+    if not isinstance(limit, int):
+        limit = 100
+    if not isinstance(days, int):
+        days = None
     r = _get_redis()
     try:
         items = await r.lrange(PORTFOLIO_EQUITY_CURVE_KEY, -limit, -1)
@@ -324,6 +331,12 @@ async def get_equity_curve(limit: int = Query(100, ge=1, le=500)):
         await r.aclose()
 
     data = [json.loads(item) for item in items]
+    if days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        data = [
+            point for point in data
+            if datetime.fromisoformat(point["ts"]) >= cutoff
+        ]
     latest_data = json.loads(latest) if latest else (data[-1] if data else None)
     return {"data": data, "latest": latest_data}
 

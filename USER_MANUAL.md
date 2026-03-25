@@ -260,6 +260,7 @@ docker compose top execution
 - 순손익, 승률, Profit Factor, 최대 낙폭
 - 시장별 손익
 - 청산 사유별 손익
+- 기간 필터 `7D / 30D / ALL`
 - 최근 종료 거래
   - 전략 ID
   - TA / 감성 / final score
@@ -295,6 +296,8 @@ http://localhost:3000/performance/market/KRW-BTC
   - 실현손익
   - SL / TP
   - `strategy` / `external`
+- 기간별 자산곡선
+  - 성과 요약과 같은 `7D / 30D / ALL` 기준으로 표시
 - 최근 신호
   - 마지막 `buy/sell/hold`
   - TA / 감성 / final score / confidence
@@ -793,7 +796,7 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/signals` | AI 신호 목록 | `market=KRW-BTC`, `side=buy`, `limit=20` |
 | GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel` |
 | GET | `/api/v1/positions` | 포지션 현황 | — |
-| GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | — |
+| GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | `limit`, `days` |
 | GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
 | GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |

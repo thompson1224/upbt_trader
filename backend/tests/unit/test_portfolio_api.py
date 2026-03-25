@@ -119,6 +119,35 @@ async def test_get_equity_curve_handles_empty_store(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_get_equity_curve_filters_by_days(monkeypatch: pytest.MonkeyPatch):
+    points = [
+        json.dumps({"ts": "2026-03-10T00:00:00+00:00", "equity": 900000}),
+        json.dumps({"ts": "2026-03-24T00:00:00+00:00", "equity": 1000000}),
+        json.dumps({"ts": "2026-03-25T00:00:00+00:00", "equity": 1010000}),
+    ]
+    fake_redis = _FakeRedis(
+        items=points,
+        latest=json.dumps({"ts": "2026-03-25T00:00:00+00:00", "equity": 1010000}).encode(),
+    )
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 3, 25, 12, 0, tzinfo=tz or timezone.utc)
+
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(portfolio_module, "datetime", _FrozenDateTime)
+
+    response = await portfolio_module.get_equity_curve(limit=10, days=7)
+
+    assert response["data"] == [
+        {"ts": "2026-03-24T00:00:00+00:00", "equity": 1000000},
+        {"ts": "2026-03-25T00:00:00+00:00", "equity": 1010000},
+    ]
+    assert response["latest"] == {"ts": "2026-03-25T00:00:00+00:00", "equity": 1010000}
+
+
+@pytest.mark.asyncio
 async def test_set_position_auto_trade_promotes_external_position(monkeypatch: pytest.MonkeyPatch):
     coin = Coin(
         id=42,

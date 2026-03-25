@@ -112,8 +112,13 @@ export const api = {
           takeProfit: pos.take_profit,
         }))
       ),
-    equityCurve: () =>
-      apiClient.get("/portfolio/equity-curve").then((r) => r.data),
+    equityCurve: (params?: { limit?: number; days?: number }) =>
+      apiClient.get("/portfolio/equity-curve", {
+        params: {
+          limit: params?.limit,
+          days: params?.days,
+        },
+      }).then((r) => r.data),
     performance: (params?: { limit?: number; days?: number; market?: string }) =>
       apiClient
         .get("/portfolio/performance", {
