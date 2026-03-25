@@ -1,6 +1,6 @@
 import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
-import type { AuditEvent, Position } from "@/types/market";
+import type { AuditEvent, PerformanceResponse, Position } from "@/types/market";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -114,6 +114,16 @@ export const api = {
       ),
     equityCurve: () =>
       apiClient.get("/portfolio/equity-curve").then((r) => r.data),
+    performance: (params?: { limit?: number; days?: number; market?: string }) =>
+      apiClient
+        .get("/portfolio/performance", {
+          params: {
+            limit: params?.limit ?? 100,
+            days: params?.days,
+            market: params?.market,
+          },
+        })
+        .then((r) => r.data as PerformanceResponse),
   },
   backtests: {
     create: (payload: object) =>

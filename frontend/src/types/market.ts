@@ -89,3 +89,53 @@ export interface BacktestMetrics {
   profitFactor: number;
   totalTrades: number;
 }
+
+export interface PerformanceSummary {
+  totalTrades: number;
+  winRate: number;
+  grossPnl: number;
+  netPnl: number;
+  avgNetPnl: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  bestTrade: number;
+  worstTrade: number;
+}
+
+export interface PerformanceBreakdownRow {
+  market?: string;
+  exitReason?: string;
+  trades: number;
+  winRate: number;
+  netPnl: number;
+}
+
+export interface PerformanceTrade {
+  market: string;
+  entryTs: string;
+  exitTs: string;
+  entryPrice: number;
+  exitPrice: number;
+  qty: number;
+  entryFee: number;
+  exitFee: number;
+  grossPnl: number;
+  netPnl: number;
+  returnPct: number;
+  holdMinutes: number;
+  exitReason: string;
+  strategyId: string | null;
+  taScore: number | null;
+  sentimentScore: number | null;
+  finalScore: number | null;
+  confidence: number | null;
+}
+
+export interface PerformanceResponse {
+  summary: PerformanceSummary;
+  byMarket: PerformanceBreakdownRow[];
+  byExitReason: PerformanceBreakdownRow[];
+  trades: PerformanceTrade[];
+}

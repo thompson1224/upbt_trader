@@ -1,0 +1,411 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { useParams } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
+import Sidebar from "@/components/layout/Sidebar";
+import GlobalHeader from "@/components/layout/GlobalHeader";
+import { api } from "@/services/api";
+import { cn } from "@/utils/cn";
+import type { PerformanceBreakdownRow, PerformanceResponse, PerformanceTrade, Position, SignalData } from "@/types/market";
+
+const RANGE_OPTIONS = [
+  { label: "7D", value: 7 },
+  { label: "30D", value: 30 },
+  { label: "ALL", value: null },
+] as const;
+
+function formatCurrency(value: number) {
+  const rounded = Math.round(value);
+  return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString("ko-KR")}원`;
+}
+
+function formatPct(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatScore(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
+  return value.toFixed(2);
+}
+
+function describeSignalAlignment(position: Position | null, signal: SignalData | null) {
+  if (!signal) {
+    return "최근 신호 없음";
+  }
+  if (!position) {
+    if (signal.side === "buy") {
+      return "현재 포지션 없음, 신규 진입 후보";
+    }
+    if (signal.side === "sell") {
+      return "현재 포지션 없음, 청산 신호만 존재";
+    }
+    return "현재 포지션 없음, 관망 상태";
+  }
+  if (signal.side === "sell") {
+    return "포지션 보유 중이지만 최근 신호는 청산 방향";
+  }
+  if (signal.side === "buy") {
+    return "포지션 방향과 최근 매수 신호가 일치";
+  }
+  return "포지션 보유 중, 최근 신호는 관망";
+}
+
+function SummaryCard({
+  label,
+  value,
+  positive,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  positive: boolean;
+  icon: typeof TrendingUp;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-gray-500">
+        <Icon className="h-3.5 w-3.5" />
+        <span>{label}</span>
+      </div>
+      <div className={cn("font-mono text-lg font-bold", positive ? "text-emerald-400" : "text-red-400")}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function BreakdownCard({ rows }: { rows: PerformanceBreakdownRow[] }) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+        청산 사유별 성과
+      </div>
+      <div className="space-y-3">
+        {rows.length === 0 ? (
+          <div className="text-sm text-gray-600">데이터 없음</div>
+        ) : (
+          rows.map((row) => (
+            <div key={row.exitReason} className="flex items-center justify-between text-sm">
+              <div>
+                <div className="font-mono text-gray-200">{row.exitReason}</div>
+                <div className="text-xs text-gray-600">
+                  {row.trades}건 · 승률 {formatPct(row.winRate)}
+                </div>
+              </div>
+              <div className={cn("font-mono font-semibold", row.netPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+                {formatCurrency(row.netPnl)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CurrentPositionCard({ position }: { position: Position | null }) {
+  if (!position) {
+    return (
+      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          현재 열린 포지션
+        </div>
+        <div className="text-sm text-gray-600">현재 보유 포지션 없음</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          현재 열린 포지션
+        </div>
+        <span
+          className={cn(
+            "rounded px-2 py-1 text-[10px] uppercase tracking-wide",
+            position.source === "strategy"
+              ? "bg-emerald-950 text-emerald-300"
+              : "bg-amber-950 text-amber-300"
+          )}
+        >
+          {position.source}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <div className="text-gray-500">수량</div>
+          <div className="font-mono text-gray-100">{position.qty.toFixed(6)}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">평균단가</div>
+          <div className="font-mono text-gray-100">{Math.round(position.avgEntryPrice).toLocaleString("ko-KR")}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">미실현손익</div>
+          <div className={cn("font-mono font-semibold", position.unrealizedPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatCurrency(position.unrealizedPnl)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">실현손익</div>
+          <div className={cn("font-mono font-semibold", position.realizedPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatCurrency(position.realizedPnl)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">Stop Loss</div>
+          <div className="font-mono text-gray-100">
+            {position.stopLoss ? Math.round(position.stopLoss).toLocaleString("ko-KR") : "-"}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">Take Profit</div>
+          <div className="font-mono text-gray-100">
+            {position.takeProfit ? Math.round(position.takeProfit).toLocaleString("ko-KR") : "-"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecentSignalCard({
+  position,
+  signals,
+}: {
+  position: Position | null;
+  signals: SignalData[];
+}) {
+  const latestSignal = signals[0] ?? null;
+  const alignmentText = describeSignalAlignment(position, latestSignal);
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          최근 신호
+        </div>
+        {latestSignal && (
+          <span
+            className={cn(
+              "rounded px-2 py-1 text-[10px] uppercase tracking-wide",
+              latestSignal.side === "buy" && "bg-emerald-950 text-emerald-300",
+              latestSignal.side === "sell" && "bg-red-950 text-red-300",
+              latestSignal.side === "hold" && "bg-slate-800 text-slate-300"
+            )}
+          >
+            {latestSignal.side}
+          </span>
+        )}
+      </div>
+
+      {!latestSignal ? (
+        <div className="text-sm text-gray-600">최근 신호 없음</div>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <div className="text-sm text-gray-300">{alignmentText}</div>
+            <div className="mt-1 text-xs text-gray-600">{formatDate(latestSignal.ts)} · {latestSignal.strategyId}</div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-gray-500">TA</div>
+              <div className="font-mono text-gray-100">{formatScore(latestSignal.taScore)}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">감성</div>
+              <div className="font-mono text-gray-100">{formatScore(latestSignal.sentimentScore)}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Final</div>
+              <div className="font-mono text-gray-100">{formatScore(latestSignal.finalScore)}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Confidence</div>
+              <div className="font-mono text-gray-100">{formatScore(latestSignal.confidence)}</div>
+            </div>
+          </div>
+          <div className="border-t border-gray-800 pt-3">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+              최근 5개
+            </div>
+            <div className="space-y-2">
+              {signals.slice(0, 5).map((signal) => (
+                <div key={signal.id} className="flex items-center justify-between text-xs">
+                  <div>
+                    <div className="font-mono text-gray-200">{signal.side}</div>
+                    <div className="text-gray-600">{formatDate(signal.ts)}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-mono text-gray-300">F {formatScore(signal.finalScore)}</div>
+                    <div className="text-gray-600">{signal.status}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TradesTable({ trades }: { trades: PerformanceTrade[] }) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900">
+      <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          종료 거래 상세
+        </div>
+        <div className="text-xs text-gray-600">총 {trades.length}건</div>
+      </div>
+      <div className="overflow-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-950 text-gray-500">
+            <tr>
+              <th className="px-4 py-2 text-left font-medium">청산 시각</th>
+              <th className="px-4 py-2 text-left font-medium">전략 / 점수</th>
+              <th className="px-4 py-2 text-right font-medium">진입/청산가</th>
+              <th className="px-4 py-2 text-right font-medium">수익률</th>
+              <th className="px-4 py-2 text-right font-medium">순손익</th>
+              <th className="px-4 py-2 text-right font-medium">보유</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((trade) => (
+              <tr key={`${trade.market}-${trade.exitTs}`} className="border-t border-gray-800 text-gray-300">
+                <td className="px-4 py-3">
+                  <div className="text-gray-200">{formatDate(trade.exitTs)}</div>
+                  <div className="text-[11px] text-gray-600">{trade.exitReason}</div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono text-gray-200">{trade.strategyId ?? "unknown"}</div>
+                  <div className="text-[11px] text-gray-600">
+                    TA {formatScore(trade.taScore)} · AI {formatScore(trade.sentimentScore)} · F {formatScore(trade.finalScore)}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <div className="font-mono text-gray-200">{Math.round(trade.entryPrice).toLocaleString("ko-KR")}</div>
+                  <div className="font-mono text-[11px] text-gray-600">{Math.round(trade.exitPrice).toLocaleString("ko-KR")}</div>
+                </td>
+                <td className={cn("px-4 py-3 text-right font-mono", trade.returnPct >= 0 ? "text-emerald-400" : "text-red-400")}>
+                  {formatPct(trade.returnPct)}
+                </td>
+                <td className={cn("px-4 py-3 text-right font-mono font-semibold", trade.netPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+                  {formatCurrency(trade.netPnl)}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-gray-400">{Math.round(trade.holdMinutes)}분</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export default function MarketPerformancePage() {
+  const params = useParams<{ market: string }>();
+  const market = decodeURIComponent(params.market);
+  const [days, setDays] = useState<number | null>(30);
+
+  const { data, isLoading } = useQuery<PerformanceResponse>({
+    queryKey: ["portfolio-performance-market", market, days],
+    queryFn: () => api.portfolio.performance({ limit: 100, days: days ?? undefined, market }),
+    refetchInterval: 30_000,
+  });
+  const { data: positions = [] } = useQuery<Position[]>({
+    queryKey: ["positions", market],
+    queryFn: api.portfolio.positions,
+    refetchInterval: 30_000,
+  });
+  const { data: signals = [] } = useQuery<SignalData[]>({
+    queryKey: ["signals", market, "recent"],
+    queryFn: () => api.signals.list({ market, limit: 5 }),
+    refetchInterval: 30_000,
+  });
+
+  const summary = data?.summary;
+  const trades = data?.trades ?? [];
+  const byExitReason = data?.byExitReason ?? [];
+  const currentPosition = positions.find((position) => position.market === market) ?? null;
+
+  return (
+    <div className="h-screen flex overflow-hidden">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <GlobalHeader />
+        <main className="flex-1 overflow-auto p-6">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div>
+              <Link href="/" className="mb-3 inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-200">
+                <ArrowLeft className="h-4 w-4" />
+                대시보드로 돌아가기
+              </Link>
+              <h1 className="text-xl font-bold text-gray-100">{market} 상세 성과</h1>
+              <div className="mt-1 text-sm text-gray-500">코인별 종료 거래와 청산 사유를 분리해서 봅니다.</div>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-1">
+              {RANGE_OPTIONS.map((option) => (
+                <button
+                  key={option.label}
+                  type="button"
+                  onClick={() => setDays(option.value)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-[11px] font-semibold tracking-[0.12em] transition",
+                    days === option.value ? "bg-sky-500/20 text-sky-300" : "text-gray-500 hover:text-gray-200"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div className="rounded-xl border border-gray-800 bg-gray-900 p-10 text-center text-sm text-gray-600">
+              성과 데이터 로딩 중...
+            </div>
+          ) : !summary || summary.totalTrades === 0 ? (
+            <div className="rounded-xl border border-gray-800 bg-gray-900 p-10 text-center text-sm text-gray-600">
+              선택한 기간에 종료 거래가 없습니다.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                <SummaryCard label="순손익" value={formatCurrency(summary.netPnl)} positive={summary.netPnl >= 0} icon={summary.netPnl >= 0 ? TrendingUp : TrendingDown} />
+                <SummaryCard label="승률" value={formatPct(summary.winRate)} positive={summary.winRate >= 0.5} icon={BarChart3} />
+                <SummaryCard label="Profit Factor" value={Number.isFinite(summary.profitFactor) ? summary.profitFactor.toFixed(2) : "∞"} positive={summary.profitFactor >= 1} icon={BarChart3} />
+                <SummaryCard label="최대 낙폭" value={formatCurrency(-summary.maxDrawdown)} positive={false} icon={ShieldAlert} />
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+                <div className="space-y-4">
+                  <CurrentPositionCard position={currentPosition} />
+                  <RecentSignalCard position={currentPosition} signals={signals} />
+                  <BreakdownCard rows={byExitReason} />
+                </div>
+                <TradesTable trades={trades} />
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

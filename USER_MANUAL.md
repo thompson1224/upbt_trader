@@ -1,7 +1,7 @@
 # Upbit AI Trader — 사용자 매뉴얼
 
 > 업비트 기반 AI 자동매매 웹앱 · Docker 실행 가이드
-> 버전: v0.2.1 (2026-03-24)
+> 버전: v0.2.2 (2026-03-25)
 
 ---
 
@@ -254,6 +254,54 @@ docker compose top execution
 └──────────┴───────────────────────────────┴──────────────────┘
                                          [토스트 알림 — 우하단]
 ```
+
+대시보드 하단 `실거래 성과` 패널에서 다음을 바로 확인할 수 있습니다.
+
+- 순손익, 승률, Profit Factor, 최대 낙폭
+- 시장별 손익
+- 청산 사유별 손익
+- 최근 종료 거래
+  - 전략 ID
+  - TA / 감성 / final score
+  - 진입가 / 청산가
+  - 보유 시간
+
+시장별 손익 또는 종료 거래의 시장명을 누르면 코인별 상세 성과 페이지로 이동합니다.
+
+---
+
+### 5-4. 코인별 상세 성과 페이지 (`/performance/market/{market}`)
+
+예:
+
+```text
+http://localhost:3000/performance/market/KRW-BTC
+```
+
+이 페이지에서는 한 코인에 대해 다음을 한 번에 봅니다.
+
+- 기간 필터: `7D`, `30D`, `ALL`
+- 코인별 요약 성과
+  - 순손익
+  - 승률
+  - Profit Factor
+  - 최대 낙폭
+- 청산 사유별 성과
+- 종료 거래 상세
+- 현재 열린 포지션 상태
+  - 수량
+  - 평균단가
+  - 미실현손익
+  - 실현손익
+  - SL / TP
+  - `strategy` / `external`
+- 최근 신호
+  - 마지막 `buy/sell/hold`
+  - TA / 감성 / final score / confidence
+  - 최근 5개 신호
+  - 현재 포지션과 최근 신호의 방향 해석
+
+즉 이 화면은 `과거 성과`, `현재 포지션`, `최근 신호`를 같이 보는 분석용 페이지입니다.
 
 ---
 
@@ -746,6 +794,7 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/orders` | 주문 내역 | `state=done\|wait\|cancel` |
 | GET | `/api/v1/positions` | 포지션 현황 | — |
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | — |
+| GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
 | GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |

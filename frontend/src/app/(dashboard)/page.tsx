@@ -2,18 +2,19 @@ import TradingViewChart from "@/components/charts/TradingViewChart";
 import AISignalPanel from "@/components/dashboard/AISignalPanel";
 import EquityCurvePanel from "@/components/dashboard/EquityCurvePanel";
 import MarketWatchlist from "@/components/dashboard/MarketWatchlist";
+import PerformancePanel from "@/components/dashboard/PerformancePanel";
 import PositionPanel from "@/components/dashboard/PositionPanel";
 
 export default function DashboardPage() {
   return (
-    <div className="h-full grid grid-cols-[minmax(0,1fr)_300px] grid-rows-[1fr_220px] gap-3">
+    <div className="h-full grid grid-cols-[minmax(0,1fr)_300px] grid-rows-[1fr_220px_260px] gap-3">
       {/* 메인 차트 */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
         <TradingViewChart />
       </div>
 
       {/* AI 신호 패널 */}
-      <div className="row-span-2 bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <div className="row-span-3 bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
         <AISignalPanel />
       </div>
 
@@ -28,6 +29,10 @@ export default function DashboardPage() {
         <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
           <EquityCurvePanel />
         </div>
+      </div>
+
+      <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+        <PerformancePanel />
       </div>
     </div>
   );

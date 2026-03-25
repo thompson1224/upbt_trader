@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,8 @@ class _FakeRedis:
         self.items = items or []
         self.latest = latest
         self.closed = False
+        self.values: dict[str, str | bytes] = {}
+        self.expirations: dict[str, int | None] = {}
 
     async def lrange(self, _key, start, end):
         if not self.items:
@@ -19,8 +22,14 @@ class _FakeRedis:
         resolved_end = None if end == -1 else end + 1
         return self.items[start:resolved_end]
 
-    async def get(self, _key):
+    async def get(self, key):
+        if key in self.values:
+            return self.values[key]
         return self.latest
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+        self.expirations[key] = ex
 
     async def aclose(self):
         self.closed = True
@@ -32,6 +41,14 @@ class _FakeScalarResult:
 
     def scalar_one_or_none(self):
         return self.value
+
+
+class _FakeRowsResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def all(self):
+        return self.rows
 
 
 class _FakeDB:
@@ -150,6 +167,259 @@ async def test_set_position_auto_trade_promotes_external_position(monkeypatch: p
     assert db.refreshed is True
     assert runtime_state is not None
     assert runtime_state.value == "strategy"
+
+
+def test_build_closed_trades_reconstructs_round_trip_from_fills():
+    fills = [
+        {
+            "market": "KRW-BTC",
+            "side": "bid",
+            "price": 100.0,
+            "volume": 1.0,
+            "fee": 0.05,
+            "filledAt": datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
+            "signal": None,
+            "strategyId": "hybrid_v1",
+            "taScore": 0.4,
+            "sentimentScore": 0.3,
+            "finalScore": 0.36,
+            "confidence": 0.9,
+        },
+        {
+            "market": "KRW-BTC",
+            "side": "ask",
+            "price": 110.0,
+            "volume": 1.0,
+            "fee": 0.055,
+            "filledAt": datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc),
+            "signal": None,
+            "orderReason": "SL triggered: 95 <= 97",
+            "strategyId": None,
+            "taScore": None,
+            "sentimentScore": None,
+            "finalScore": None,
+            "confidence": None,
+        },
+    ]
+
+    trades = portfolio_module._build_closed_trades(fills)
+
+    assert len(trades) == 1
+    assert trades[0]["market"] == "KRW-BTC"
+    assert trades[0]["entryPrice"] == pytest.approx(100.0)
+    assert trades[0]["exitPrice"] == pytest.approx(110.0)
+    assert trades[0]["grossPnl"] == pytest.approx(10.0)
+    assert trades[0]["netPnl"] == pytest.approx(9.895)
+    assert trades[0]["exitReason"] == "stop_loss"
+    assert trades[0]["strategyId"] == "hybrid_v1"
+
+
+def test_summarize_performance_computes_profit_factor_and_drawdown():
+    trades = [
+        {"market": "KRW-BTC", "exitReason": "sell_signal", "grossPnl": 12.0, "netPnl": 10.0},
+        {"market": "KRW-ETH", "exitReason": "protection", "grossPnl": -6.0, "netPnl": -8.0},
+        {"market": "KRW-XRP", "exitReason": "sell_signal", "grossPnl": 4.0, "netPnl": 2.0},
+    ]
+
+    summary = portfolio_module._summarize_performance(trades)
+    by_market = portfolio_module._group_performance(trades, "market")
+    by_reason = portfolio_module._group_performance(trades, "exitReason")
+
+    assert summary["totalTrades"] == 3
+    assert summary["winRate"] == pytest.approx(2 / 3)
+    assert summary["netPnl"] == pytest.approx(4.0)
+    assert summary["profitFactor"] == pytest.approx(12.0 / 8.0)
+    assert summary["maxDrawdown"] == pytest.approx(8.0)
+    assert by_market[0]["market"] == "KRW-BTC"
+    assert by_reason[0]["exitReason"] == "sell_signal"
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_performance_reads_from_cache(monkeypatch: pytest.MonkeyPatch):
+    cached_payload = {
+        "summary": {"totalTrades": 1, "winRate": 1.0},
+        "byMarket": [{"market": "KRW-BTC", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
+        "byExitReason": [{"exitReason": "take_profit", "trades": 1, "winRate": 1.0, "netPnl": 100.0}],
+        "trades": [{"market": "KRW-BTC", "exitReason": "take_profit", "netPnl": 100.0}],
+    }
+    fake_redis = _FakeRedis()
+    fake_redis.values[portfolio_module._performance_cache_key(25, None, None)] = json.dumps(cached_payload)
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+
+    class _FailDB:
+        async def execute(self, _statement):
+            raise AssertionError("DB should not be called when cache is warm")
+
+    response = await portfolio_module.get_portfolio_performance(limit=25, db=_FailDB())
+
+    assert response == cached_payload
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_performance_caches_and_separates_tp_reason(monkeypatch: pytest.MonkeyPatch):
+    buy_fill = SimpleNamespace(
+        price=100.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 25, 0, 0, tzinfo=timezone.utc),
+    )
+    sell_fill = SimpleNamespace(
+        price=110.0,
+        volume=1.0,
+        fee=0.055,
+        filled_at=datetime(2026, 3, 25, 1, 0, tzinfo=timezone.utc),
+    )
+    buy_order = SimpleNamespace(side="bid", rejected_reason=None, signal_id=1, coin_id=1)
+    sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 110 >= 106", signal_id=None, coin_id=1)
+    coin_market = "KRW-BTC"
+    buy_signal = SimpleNamespace(
+        id=1,
+        strategy_id="hybrid_v1",
+        ta_score=0.4,
+        sentiment_score=0.3,
+        final_score=0.36,
+        confidence=0.9,
+        side="buy",
+    )
+
+    class _PerfDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, _statement):
+            self.calls += 1
+            return _FakeRowsResult(
+                [
+                    (buy_fill, buy_order, coin_market, buy_signal),
+                    (sell_fill, sell_order, coin_market, None),
+                ]
+            )
+
+    fake_db = _PerfDB()
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+
+    response = await portfolio_module.get_portfolio_performance(limit=50, db=fake_db)
+
+    assert fake_db.calls == 1
+    assert response["summary"]["totalTrades"] == 1
+    assert response["byExitReason"][0]["exitReason"] == "take_profit"
+    assert response["trades"][0]["exitReason"] == "take_profit"
+    cache_key = portfolio_module._performance_cache_key(50, None, None)
+    assert cache_key in fake_redis.values
+    assert fake_redis.expirations[cache_key] == portfolio_module.PORTFOLIO_PERFORMANCE_CACHE_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_performance_filters_by_days(monkeypatch: pytest.MonkeyPatch):
+    recent_buy_fill = SimpleNamespace(
+        price=100.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc),
+    )
+    recent_sell_fill = SimpleNamespace(
+        price=105.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 24, 1, 0, tzinfo=timezone.utc),
+    )
+    old_buy_fill = SimpleNamespace(
+        price=200.0,
+        volume=1.0,
+        fee=0.1,
+        filled_at=datetime(2026, 3, 10, 0, 0, tzinfo=timezone.utc),
+    )
+    old_sell_fill = SimpleNamespace(
+        price=210.0,
+        volume=1.0,
+        fee=0.1,
+        filled_at=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+    )
+    buy_order = SimpleNamespace(side="bid", rejected_reason=None, signal_id=1, coin_id=1)
+    sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 105 >= 103", signal_id=None, coin_id=1)
+    buy_signal = SimpleNamespace(
+        id=1,
+        strategy_id="hybrid_v1",
+        ta_score=0.4,
+        sentiment_score=0.3,
+        final_score=0.36,
+        confidence=0.9,
+        side="buy",
+    )
+
+    class _PerfDB:
+        async def execute(self, _statement):
+            return _FakeRowsResult(
+                [
+                    (old_buy_fill, buy_order, "KRW-ETH", buy_signal),
+                    (old_sell_fill, sell_order, "KRW-ETH", None),
+                    (recent_buy_fill, buy_order, "KRW-BTC", buy_signal),
+                    (recent_sell_fill, sell_order, "KRW-BTC", None),
+                ]
+            )
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 3, 25, 0, 0, tzinfo=tz or timezone.utc)
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(portfolio_module, "datetime", _FrozenDateTime)
+
+    response = await portfolio_module.get_portfolio_performance(limit=50, days=7, db=_PerfDB())
+
+    assert response["summary"]["totalTrades"] == 1
+    assert response["trades"][0]["market"] == "KRW-BTC"
+    assert portfolio_module._performance_cache_key(50, 7, None) in fake_redis.values
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_performance_filters_by_market(monkeypatch: pytest.MonkeyPatch):
+    buy_fill = SimpleNamespace(
+        price=100.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc),
+    )
+    sell_fill = SimpleNamespace(
+        price=105.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 24, 1, 0, tzinfo=timezone.utc),
+    )
+    buy_order = SimpleNamespace(side="bid", rejected_reason=None, signal_id=1, coin_id=1)
+    sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 105 >= 103", signal_id=None, coin_id=1)
+    buy_signal = SimpleNamespace(
+        id=1,
+        strategy_id="hybrid_v1",
+        ta_score=0.4,
+        sentiment_score=0.3,
+        final_score=0.36,
+        confidence=0.9,
+        side="buy",
+    )
+
+    class _PerfDB:
+        async def execute(self, _statement):
+            return _FakeRowsResult(
+                [
+                    (buy_fill, buy_order, "KRW-BTC", buy_signal),
+                    (sell_fill, sell_order, "KRW-BTC", None),
+                    (buy_fill, buy_order, "KRW-ETH", buy_signal),
+                    (sell_fill, sell_order, "KRW-ETH", None),
+                ]
+            )
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+
+    response = await portfolio_module.get_portfolio_performance(limit=50, market="krw-eth", db=_PerfDB())
+
+    assert response["summary"]["totalTrades"] == 1
+    assert response["trades"][0]["market"] == "KRW-ETH"
+    assert portfolio_module._performance_cache_key(50, None, "KRW-ETH") in fake_redis.values
 
 
 async def _noop():
