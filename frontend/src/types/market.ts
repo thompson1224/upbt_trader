@@ -260,6 +260,15 @@ export interface DailyReportResponse {
   date: string;
   summary: DailyReportSummary;
   byExitReason: PerformanceBreakdownRow[];
+  analysis: {
+    byFinalScoreBand: PerformanceBreakdownRow[];
+    byHourBlock: PerformanceBreakdownRow[];
+    weakMarkets: PerformanceBreakdownRow[];
+    riskRejectedReasons: Array<{
+      reason: string;
+      count: number;
+    }>;
+  };
   positions: DailyReportPosition[];
   recentAuditCounts: {
     riskRejected: number;

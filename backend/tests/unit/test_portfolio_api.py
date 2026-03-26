@@ -1094,14 +1094,20 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
     risk_event = SimpleNamespace(
         event_type="risk_rejected",
         created_at=datetime(2026, 3, 26, 3, 0, tzinfo=timezone.utc),
+        message="risk_rejected KRW-ETH: Max consecutive losses reached: 5",
+        payload_json=json.dumps({"reason": "Max consecutive losses reached: 5"}),
     )
     fail_event = SimpleNamespace(
         event_type="order_failed",
         created_at=datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc),
+        message="order_failed KRW-ETH: insufficient_funds_bid",
+        payload_json=json.dumps({"reason": "insufficient_funds_bid"}),
     )
     exclude_event = SimpleNamespace(
         event_type="excluded_market_added",
         created_at=datetime(2026, 3, 26, 5, 0, tzinfo=timezone.utc),
+        message="excluded_market_added KRW-ETH",
+        payload_json=json.dumps({"market": "KRW-ETH"}),
     )
 
     class _FrozenDateTime(datetime):
@@ -1173,6 +1179,10 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
     assert response["summary"]["orderFailedCount"] == 1
     assert response["summary"]["excludedOpsCount"] == 1
     assert response["byExitReason"][0]["exitReason"] == "take_profit"
+    assert response["analysis"]["byFinalScoreBand"][0]["scoreBand"] == "<0.50"
+    assert response["analysis"]["weakMarkets"][0]["market"] == "KRW-BTC"
+    assert response["analysis"]["riskRejectedReasons"][0]["reason"] == "Max consecutive losses reached: 5"
+    assert response["analysis"]["riskRejectedReasons"][0]["count"] == 1
     assert response["positions"][0]["market"] == "KRW-ETH"
     assert response["positions"][0]["excluded"] is True
     assert response["positions"][0]["excludedReason"] == "장기 hold 과다"

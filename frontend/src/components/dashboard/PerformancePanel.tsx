@@ -62,6 +62,29 @@ function formatMinutes(value: number) {
   return minutes > 0 ? `${hours}시간 ${minutes}분` : `${hours}시간`;
 }
 
+function formatDelta(value: number, suffix = "") {
+  const rounded = Math.round(value * 10) / 10;
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded}${suffix}`;
+}
+
+function getWeakestBreakdown(rows: PerformanceBreakdownRow[]) {
+  if (rows.length === 0) {
+    return null;
+  }
+  return [...rows].sort((a, b) => a.netPnl - b.netPnl)[0] ?? null;
+}
+
+function getBreakdownLabel(
+  row: PerformanceBreakdownRow | null,
+  key: "market" | "scoreBand" | "hourBlock"
+) {
+  if (!row) {
+    return "없음";
+  }
+  return row[key] ?? "unknown";
+}
+
 function getTransitionRecommendation(
   row: MarketTransitionQualityRow,
   isExcluded: boolean,
@@ -374,6 +397,8 @@ function MarketTransitionQualityList({
 
 function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
   const summary = report.summary;
+  const weakestMarket = report.analysis.weakMarkets[0];
+  const topRiskReason = report.analysis.riskRejectedReasons[0];
   const weakestPosition = report.positions[0] ?? null;
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
@@ -442,6 +467,33 @@ function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
           </div>
         </div>
       )}
+      {(weakestMarket || topRiskReason) && (
+        <div className="mt-3 border-t border-gray-800 pt-3 text-xs space-y-2">
+          {weakestMarket && (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-gray-500">오늘 최약 종료 시장</div>
+                <Link
+                  href={`/performance/market/${weakestMarket.market}`}
+                  className="font-mono text-sky-300 hover:text-sky-200"
+                >
+                  {weakestMarket.market}
+                </Link>
+              </div>
+              <div className={cn("font-mono font-semibold", weakestMarket.netPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+                {formatCurrency(weakestMarket.netPnl)}
+              </div>
+            </div>
+          )}
+          {topRiskReason && (
+            <div>
+              <div className="text-gray-500">주요 리스크 거절 사유</div>
+              <div className="text-gray-300">{topRiskReason.reason}</div>
+              <div className="font-mono text-[11px] text-gray-600">{topRiskReason.count}건</div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -475,6 +527,121 @@ function DailyOpsHistory({ rows }: { rows: DailyReportResponse[] }) {
             </div>
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
+  const current = rows[0] ?? null;
+  const previous = rows[1] ?? null;
+
+  if (!current) {
+    return (
+      <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">
+        비교할 운영 snapshot이 아직 없습니다.
+      </div>
+    );
+  }
+
+  if (!previous) {
+    return (
+      <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          최근 7일 변화
+        </div>
+        <div className="text-xs text-gray-600">
+          직전 일일 snapshot이 아직 없어 오늘 기준 변화 비교는 대기 중입니다.
+        </div>
+      </div>
+    );
+  }
+
+  const currentWeakMarket = getWeakestBreakdown(current.analysis.weakMarkets);
+  const previousWeakMarket = getWeakestBreakdown(previous.analysis.weakMarkets);
+  const currentWeakScore = getWeakestBreakdown(current.analysis.byFinalScoreBand);
+  const previousWeakScore = getWeakestBreakdown(previous.analysis.byFinalScoreBand);
+  const currentWeakHour = getWeakestBreakdown(current.analysis.byHourBlock);
+  const previousWeakHour = getWeakestBreakdown(previous.analysis.byHourBlock);
+  const currentRiskReason = current.analysis.riskRejectedReasons[0] ?? null;
+  const previousRiskReason = previous.analysis.riskRejectedReasons[0] ?? null;
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          최근 7일 변화
+        </div>
+        <div className="text-[11px] text-gray-600">
+          {current.date} vs {previous.date}
+        </div>
+      </div>
+
+      <div className="space-y-3 text-xs">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-gray-500">일일 손익 변화</div>
+            <div
+              className={cn(
+                "font-mono font-semibold",
+                current.summary.dailyPnl - previous.summary.dailyPnl >= 0 ? "text-emerald-400" : "text-red-400"
+              )}
+            >
+              {formatCurrency(current.summary.dailyPnl - previous.summary.dailyPnl)}
+            </div>
+          </div>
+          <div>
+            <div className="text-gray-500">리스크 거절 변화</div>
+            <div
+              className={cn(
+                "font-mono font-semibold",
+                current.summary.riskRejectedCount - previous.summary.riskRejectedCount <= 0 ? "text-emerald-400" : "text-amber-300"
+              )}
+            >
+              {formatDelta(current.summary.riskRejectedCount - previous.summary.riskRejectedCount, "건")}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800 pt-3">
+          <div className="text-gray-500">최약 score 구간 변화</div>
+          <div className="mt-1 text-gray-300">
+            {getBreakdownLabel(previousWeakScore, "scoreBand")} → {getBreakdownLabel(currentWeakScore, "scoreBand")}
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            {formatCurrency(previousWeakScore?.netPnl ?? 0)} → {formatCurrency(currentWeakScore?.netPnl ?? 0)}
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800 pt-3">
+          <div className="text-gray-500">최약 시간대 변화</div>
+          <div className="mt-1 text-gray-300">
+            {getBreakdownLabel(previousWeakHour, "hourBlock")} → {getBreakdownLabel(currentWeakHour, "hourBlock")}
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            {formatCurrency(previousWeakHour?.netPnl ?? 0)} → {formatCurrency(currentWeakHour?.netPnl ?? 0)}
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800 pt-3">
+          <div className="text-gray-500">취약 코인 변화</div>
+          <div className="mt-1 text-gray-300">
+            {getBreakdownLabel(previousWeakMarket, "market")} → {getBreakdownLabel(currentWeakMarket, "market")}
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            {formatCurrency(previousWeakMarket?.netPnl ?? 0)} → {formatCurrency(currentWeakMarket?.netPnl ?? 0)}
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800 pt-3">
+          <div className="text-gray-500">주요 리스크 거절 사유 변화</div>
+          <div className="mt-1 text-gray-300">
+            {(previousRiskReason?.reason ?? "없음")} → {(currentRiskReason?.reason ?? "없음")}
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            {(previousRiskReason?.count ?? 0)}건 → {(currentRiskReason?.count ?? 0)}건
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -664,6 +831,7 @@ export default function PerformancePanel() {
 
           {dailyReport ? <DailyOpsSummary report={dailyReport} /> : <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">오늘 운영 요약 로딩 중...</div>}
           <DailyOpsHistory rows={dailyReportHistory} />
+          <DailyOpsChanges rows={dailyReportHistory} />
           <BreakdownList title="시장별 손익" rows={byMarket} keyName="market" />
           <BreakdownList title="청산 사유" rows={byExitReason} keyName="exitReason" />
           <BreakdownList title="Final Score 구간" rows={byFinalScoreBand} keyName="scoreBand" />

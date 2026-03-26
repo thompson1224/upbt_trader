@@ -105,6 +105,34 @@ def _parse_excluded_market_state(raw: str | bytes | None) -> dict:
     }
 
 
+def _safe_load_json(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _group_audit_reason_counts(audit_rows: list[AuditEvent], *, event_type: str) -> list[dict]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in audit_rows:
+        if row.event_type != event_type:
+            continue
+        payload = _safe_load_json(row.payload_json)
+        reason = None
+        if payload is not None:
+            reason = str(payload.get("reason", "") or "").strip()
+        if not reason:
+            reason = row.message.strip() if row.message else "unknown"
+        counts[reason] += 1
+
+    rows = [{"reason": reason, "count": count} for reason, count in counts.items()]
+    rows.sort(key=lambda row: (-row["count"], row["reason"]))
+    return rows
+
+
 def _daily_report_runtime_state_key(date_key: str) -> str:
     return f"{DAILY_REPORT_RUNTIME_STATE_PREFIX}{date_key}"
 
@@ -1068,6 +1096,18 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
             "excludedOpsCount": excluded_ops_count,
         },
         "byExitReason": _group_performance(trades, "exitReason"),
+        "analysis": {
+            "byFinalScoreBand": _group_score_band_performance(trades),
+            "byHourBlock": _group_hour_block_performance(trades),
+            "weakMarkets": sorted(
+                _group_performance(trades, "market"),
+                key=lambda row: row["netPnl"],
+            )[:3],
+            "riskRejectedReasons": _group_audit_reason_counts(
+                audit_rows,
+                event_type="risk_rejected",
+            )[:5],
+        },
         "positions": [
             {
                 "market": market,
