@@ -280,6 +280,9 @@ docker compose top execution
   - 최약 시간대 변화
   - 취약 코인 변화
   - 주요 리스크 거절 사유 변화
+  - 변화 자동 해석 문구
+    - 예: `리스크 거절 감소`
+    - 예: `취약 코인 변경`
 - 시장별 손익
 - 청산 사유별 손익
 - 기간 필터 `7D / 30D / ALL`
@@ -291,6 +294,12 @@ docker compose top execution
   - TA / 감성 / final score
   - 진입가 / 청산가
   - 보유 시간
+
+손실 축소용 즉시 운영 필터:
+
+- 최소 매수 `Final Score`
+- 매수 차단 시간대 (KST 4시간 블록)
+- 제외 코인
 
 시장별 손익 또는 종료 거래의 시장명을 누르면 코인별 상세 성과 페이지로 이동합니다.
 
@@ -312,6 +321,13 @@ http://localhost:3000/performance/market/KRW-BTC
   - 승률
   - Profit Factor
   - 최대 낙폭
+- 현재 해석
+  - 선택 기간 순손익
+  - `hold→sell` 전환 품질
+  - 현재 포지션 미실현손익
+  - 장기 `hold` 경고
+  - 최근 `buy / sell / hold` 신호 방향
+  - 제외 상태 / 제외 추천 / 복귀 검토
 - 청산 사유별 성과
 - 종료 거래 상세
 - 현재 열린 포지션 상태
@@ -451,6 +467,7 @@ http://localhost:3000/performance/market/KRW-BTC
 | 업비트 Secret Key | 업비트 API Secret Key |
 | Groq API 키 | `gsk_...` 형태 (console.groq.com) |
 | 최소 매수 Final Score | 이 값보다 낮은 `buy` 신호는 주문 전 거절 |
+| 매수 차단 시간대 (KST) | 선택한 시간대의 일반 `buy` 신호 차단 |
 | 외부 보유분 자동 손절 | 외부 보유 코인에 기본 손절만 허용 |
 | 장기 Hold 경고 기준 | 연속 hold 경고를 띄울 분 기준 |
 | 전환 추천 기준 | 제외 추천 / 복귀 검토 배지 계산 기준 |
@@ -465,6 +482,13 @@ http://localhost:3000/performance/market/KRW-BTC
 - 추천 시작값은 `0.60`
 - `manual-test`와 `sell`에는 적용되지 않음
 - 낮은 점수 구간이 실제 손실로 확인될 때 운영자가 바로 필터를 강화하는 용도
+
+**매수 차단 시간대 (KST)**:
+- `00-04`, `04-08`, `08-12`, `12-16`, `16-20`, `20-24`
+- 선택한 시간대에는 일반 `buy` 신호를 주문 전에 거절합니다.
+- `sell`, `manual-test`에는 적용되지 않습니다.
+- 시간대별 손실이 큰 구간을 바로 잘라내는 운영 필터입니다.
+- 현재 데이터 기준으로는 `08-12 KST` 차단을 우선 검토할 수 있습니다.
 
 **연속 손실 초기화 버튼**:
 - 리스크 가드가 `Max consecutive losses reached: 5`로 신규 매수를 막을 때 사용
@@ -923,6 +947,8 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | PATCH | `/api/v1/settings/manual-test-mode` | 수동 테스트 모드 ON/OFF | `enabled: bool` |
 | GET | `/api/v1/settings/min-buy-final-score` | 최소 매수 Final Score 조회 | — |
 | PATCH | `/api/v1/settings/min-buy-final-score` | 최소 매수 Final Score 설정 | `value: 0.0 ~ 1.0` |
+| GET | `/api/v1/settings/blocked-buy-hour-blocks` | 매수 차단 시간대 조회 | — |
+| PATCH | `/api/v1/settings/blocked-buy-hour-blocks` | 매수 차단 시간대 설정 | `blocks: ["08-12"]` |
 | POST | `/api/v1/settings/risk/reset-loss-streak` | 연속 손실 초기화 | — |
 
 ### WebSocket

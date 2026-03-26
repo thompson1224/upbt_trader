@@ -91,6 +91,78 @@ function describeSignalAlignment(position: Position | null, signal: SignalData |
   return "포지션 보유 중, 최근 신호는 관망";
 }
 
+function buildMarketInsights({
+  summary,
+  transitionQuality,
+  position,
+  latestSignal,
+  isExcluded,
+  recommendation,
+}: {
+  summary: PerformanceResponse["summary"];
+  transitionQuality: MarketTransitionQualityRow | null;
+  position: Position | null;
+  latestSignal: SignalData | null;
+  isExcluded: boolean;
+  recommendation: { label: string; description: string; tone: "red" | "emerald"; details: string[] } | null;
+}) {
+  const insights: Array<{ tone: "emerald" | "amber" | "red"; message: string }> = [];
+
+  if (summary.netPnl >= 0) {
+    insights.push({ tone: "emerald", message: `선택 기간 순손익은 ${formatCurrency(summary.netPnl)}로 플러스입니다.` });
+  } else {
+    insights.push({ tone: "red", message: `선택 기간 순손익은 ${formatCurrency(summary.netPnl)}로 마이너스입니다.` });
+  }
+
+  if (transitionQuality) {
+    if (transitionQuality.holdToSellRate <= 0.2 && transitionQuality.holdOriginCount >= 3) {
+      insights.push({
+        tone: "amber",
+        message: `hold→sell 전환이 ${formatPct(transitionQuality.holdToSellRate)}로 낮아 청산 전환이 약합니다.`,
+      });
+    } else if (transitionQuality.holdToSellRate >= 0.4 && transitionQuality.holdOriginCount >= 3) {
+      insights.push({
+        tone: "emerald",
+        message: `hold→sell 전환이 ${formatPct(transitionQuality.holdToSellRate)}로 비교적 양호합니다.`,
+      });
+    }
+  }
+
+  if (position) {
+    if (position.holdStale && position.holdWarning) {
+      insights.push({ tone: "amber", message: position.holdWarning });
+    } else if (position.unrealizedPnl < 0) {
+      insights.push({ tone: "red", message: `현재 열린 포지션 미실현손익은 ${formatCurrency(position.unrealizedPnl)}입니다.` });
+    } else if (position.unrealizedPnl > 0) {
+      insights.push({ tone: "emerald", message: `현재 열린 포지션 미실현손익은 ${formatCurrency(position.unrealizedPnl)}입니다.` });
+    }
+  }
+
+  if (latestSignal) {
+    if (latestSignal.side === "sell") {
+      insights.push({ tone: "emerald", message: "최근 신호는 청산 방향입니다." });
+    } else if (latestSignal.side === "hold") {
+      insights.push({ tone: "amber", message: latestSignal.displayReason || "최근 신호는 관망입니다." });
+    } else if (latestSignal.side === "buy" && position) {
+      insights.push({ tone: "amber", message: "포지션 보유 중에도 최근 신호는 추가 매수 방향입니다." });
+    }
+  }
+
+  if (isExcluded) {
+    insights.push({
+      tone: "red",
+      message: recommendation?.description ?? "현재 자동매매 신호 생성 대상에서 제외된 코인입니다.",
+    });
+  } else if (recommendation) {
+    insights.push({
+      tone: recommendation.tone,
+      message: recommendation.description,
+    });
+  }
+
+  return insights.slice(0, 5);
+}
+
 function SummaryCard({
   label,
   value,
@@ -313,6 +385,54 @@ function ExclusionHistoryCard({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function MarketInsightCard({
+  summary,
+  transitionQuality,
+  position,
+  latestSignal,
+  isExcluded,
+  recommendation,
+}: {
+  summary: PerformanceResponse["summary"];
+  transitionQuality: MarketTransitionQualityRow | null;
+  position: Position | null;
+  latestSignal: SignalData | null;
+  isExcluded: boolean;
+  recommendation: { label: string; description: string; tone: "red" | "emerald"; details: string[] } | null;
+}) {
+  const insights = buildMarketInsights({
+    summary,
+    transitionQuality,
+    position,
+    latestSignal,
+    isExcluded,
+    recommendation,
+  });
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+        현재 해석
+      </div>
+      <div className="space-y-2 text-sm">
+        {insights.map((insight) => (
+          <div
+            key={insight.message}
+            className={cn(
+              "rounded-lg border px-3 py-2",
+              insight.tone === "emerald" && "border-emerald-900 bg-emerald-950/30 text-emerald-200",
+              insight.tone === "amber" && "border-amber-900 bg-amber-950/30 text-amber-200",
+              insight.tone === "red" && "border-red-900 bg-red-950/30 text-red-200"
+            )}
+          >
+            {insight.message}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -777,6 +897,7 @@ export default function MarketPerformancePage() {
   const trades = data?.trades ?? [];
   const byExitReason = data?.byExitReason ?? [];
   const currentPosition = positions.find((position) => position.market === market) ?? null;
+  const latestSignal = signals[0] ?? null;
   const equityCurve = equityCurveResponse?.data ?? [];
   const equityLatest = equityCurveResponse?.latest;
   const transitionQualityRow = transitionQuality ?? null;
@@ -861,6 +982,14 @@ export default function MarketPerformancePage() {
 
               <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
                 <div className="space-y-4">
+                  <MarketInsightCard
+                    summary={summary}
+                    transitionQuality={transitionQualityRow}
+                    position={currentPosition}
+                    latestSignal={latestSignal}
+                    isExcluded={isExcluded}
+                    recommendation={recommendation}
+                  />
                   <CurrentPositionCard position={currentPosition} />
                   <ExclusionHistoryCard
                     isExcluded={isExcluded}

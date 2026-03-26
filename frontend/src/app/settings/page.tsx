@@ -1,10 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/services/api";
-import type { ExcludedMarketItem, MarketInfo, TransitionRecommendationSettings } from "@/types/market";
+import type { ExcludedMarketItem, KstHourBlock, MarketInfo, TransitionRecommendationSettings } from "@/types/market";
 import { Key, Zap, Eye, EyeOff, CheckCircle, AlertCircle, ShieldAlert, RotateCcw } from "lucide-react";
 import Sidebar from "@/components/layout/Sidebar";
 import GlobalHeader from "@/components/layout/GlobalHeader";
+
+const KST_HOUR_BLOCK_OPTIONS: KstHourBlock[] = ["00-04", "04-08", "08-12", "12-16", "16-20", "20-24"];
 
 export default function SettingsPage() {
   const [upbitAccess, setUpbitAccess] = useState("");
@@ -14,6 +16,7 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [externalStopLossEnabled, setExternalStopLossEnabled] = useState(false);
   const [minBuyFinalScore, setMinBuyFinalScore] = useState("0.00");
+  const [blockedBuyHourBlocks, setBlockedBuyHourBlocks] = useState<KstHourBlock[]>([]);
   const [holdStaleMinutes, setHoldStaleMinutes] = useState("180");
   const [transitionRecommendationSettings, setTransitionRecommendationSettings] = useState<TransitionRecommendationSettings>({
     min_hold_origin_count: 3,
@@ -37,6 +40,9 @@ export default function SettingsPage() {
       .getMinBuyFinalScore()
       .then(({ value }) => setMinBuyFinalScore(value.toFixed(2)));
     api.settings
+      .getBlockedBuyHourBlocks()
+      .then(({ blocks }) => setBlockedBuyHourBlocks(blocks));
+    api.settings
       .getHoldStaleMinutes()
       .then(({ value }) => setHoldStaleMinutes(String(value)));
     api.settings
@@ -57,6 +63,7 @@ export default function SettingsPage() {
       }
       await api.settings.setExternalPositionStopLoss(externalStopLossEnabled);
       await api.settings.setMinBuyFinalScore(Number(minBuyFinalScore) || 0);
+      await api.settings.setBlockedBuyHourBlocks(blockedBuyHourBlocks);
       await api.settings.setHoldStaleMinutes(Number(holdStaleMinutes) || 180);
       await api.settings.setTransitionRecommendationSettings(transitionRecommendationSettings);
       await api.settings.setExcludedMarkets(excludedMarkets);
@@ -98,6 +105,14 @@ export default function SettingsPage() {
           ? { ...item, reason, updated_at: new Date().toISOString() }
           : item
       )
+    );
+  };
+
+  const toggleBlockedBuyHourBlock = (block: KstHourBlock) => {
+    setBlockedBuyHourBlocks((current) =>
+      current.includes(block)
+        ? current.filter((item) => item !== block)
+        : [...current, block].sort()
     );
   };
 
@@ -171,6 +186,40 @@ export default function SettingsPage() {
                 `buy` 신호의 `final score`가 이 값보다 낮으면 주문 전에 거절합니다. `0.00`은 비활성, 시작 추천값은 `0.60`입니다.
               </p>
             </div>
+          </section>
+
+          <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert className="w-4 h-4 text-red-300" />
+              <h2 className="font-semibold text-sm">매수 차단 시간대 (KST)</h2>
+            </div>
+            <div className="mb-3 text-xs text-gray-600">
+              선택한 시간대에는 일반 `buy` 신호를 주문 전에 거절합니다. `sell`과 `manual-test`에는 적용하지 않습니다.
+            </div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {KST_HOUR_BLOCK_OPTIONS.map((block) => {
+                const checked = blockedBuyHourBlocks.includes(block);
+                return (
+                  <label
+                    key={block}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      checked ? "border-red-500/50 bg-red-950/30 text-red-200" : "border-gray-800 bg-gray-950/40 text-gray-300"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleBlockedBuyHourBlock(block)}
+                      className="accent-red-500"
+                    />
+                    <span className="font-mono">{block}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-xs text-gray-600">
+              현재 손실이 큰 `08-12 KST` 같은 구간을 우선 차단하는 용도입니다.
+            </p>
           </section>
 
           <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">

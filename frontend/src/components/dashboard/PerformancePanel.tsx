@@ -85,6 +85,97 @@ function getBreakdownLabel(
   return row[key] ?? "unknown";
 }
 
+function buildDailyTrendInsights(current: DailyReportResponse, previous: DailyReportResponse) {
+  const insights: Array<{ tone: "emerald" | "amber" | "red"; message: string }> = [];
+  const pnlDelta = current.summary.dailyPnl - previous.summary.dailyPnl;
+  const riskDelta = current.summary.riskRejectedCount - previous.summary.riskRejectedCount;
+  const failDelta = current.summary.orderFailedCount - previous.summary.orderFailedCount;
+
+  const currentWeakScore = getWeakestBreakdown(current.analysis.byFinalScoreBand);
+  const previousWeakScore = getWeakestBreakdown(previous.analysis.byFinalScoreBand);
+  const currentWeakHour = getWeakestBreakdown(current.analysis.byHourBlock);
+  const previousWeakHour = getWeakestBreakdown(previous.analysis.byHourBlock);
+  const currentWeakMarket = getWeakestBreakdown(current.analysis.weakMarkets);
+  const previousWeakMarket = getWeakestBreakdown(previous.analysis.weakMarkets);
+  const currentRiskReason = current.analysis.riskRejectedReasons[0] ?? null;
+  const previousRiskReason = previous.analysis.riskRejectedReasons[0] ?? null;
+
+  if (pnlDelta >= 5000) {
+    insights.push({ tone: "emerald", message: `일일 손익이 ${formatCurrency(pnlDelta)} 개선됐습니다.` });
+  } else if (pnlDelta <= -5000) {
+    insights.push({ tone: "red", message: `일일 손익이 ${formatCurrency(pnlDelta)} 악화됐습니다.` });
+  }
+
+  if (riskDelta <= -2) {
+    insights.push({ tone: "emerald", message: `리스크 거절이 ${Math.abs(riskDelta)}건 줄었습니다.` });
+  } else if (riskDelta >= 2) {
+    insights.push({ tone: "amber", message: `리스크 거절이 ${riskDelta}건 늘었습니다.` });
+  }
+
+  if (failDelta <= -1) {
+    insights.push({ tone: "emerald", message: `주문 실패가 ${Math.abs(failDelta)}건 줄었습니다.` });
+  } else if (failDelta >= 1) {
+    insights.push({ tone: "red", message: `주문 실패가 ${failDelta}건 늘었습니다.` });
+  }
+
+  if (
+    currentWeakHour &&
+    previousWeakHour &&
+    currentWeakHour.hourBlock !== previousWeakHour.hourBlock &&
+    currentWeakHour.netPnl < 0
+  ) {
+    insights.push({
+      tone: "amber",
+      message: `최약 시간대가 ${previousWeakHour.hourBlock}에서 ${currentWeakHour.hourBlock}로 바뀌었습니다.`,
+    });
+  }
+
+  if (
+    currentWeakScore &&
+    previousWeakScore &&
+    currentWeakScore.scoreBand !== previousWeakScore.scoreBand &&
+    currentWeakScore.netPnl < 0
+  ) {
+    insights.push({
+      tone: "amber",
+      message: `최약 Final Score 구간이 ${previousWeakScore.scoreBand}에서 ${currentWeakScore.scoreBand}로 이동했습니다.`,
+    });
+  }
+
+  if (
+    currentWeakMarket &&
+    previousWeakMarket &&
+    currentWeakMarket.market !== previousWeakMarket.market &&
+    currentWeakMarket.netPnl < 0
+  ) {
+    insights.push({
+      tone: "red",
+      message: `취약 코인이 ${previousWeakMarket.market}에서 ${currentWeakMarket.market}로 바뀌었습니다.`,
+    });
+  }
+
+  if (
+    currentRiskReason &&
+    previousRiskReason &&
+    currentRiskReason.reason !== previousRiskReason.reason &&
+    currentRiskReason.count > 0
+  ) {
+    insights.push({
+      tone: "amber",
+      message: `주요 리스크 거절 사유가 '${currentRiskReason.reason}'로 바뀌었습니다.`,
+    });
+  }
+
+  if (insights.length === 0) {
+    insights.push({
+      tone: "emerald",
+      message: "직전 snapshot 대비 큰 악화 없이 비슷한 흐름을 유지했습니다.",
+    });
+  }
+
+  return insights.slice(0, 4);
+}
+
 function getTransitionRecommendation(
   row: MarketTransitionQualityRow,
   isExcluded: boolean,
@@ -565,6 +656,7 @@ function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
   const previousWeakHour = getWeakestBreakdown(previous.analysis.byHourBlock);
   const currentRiskReason = current.analysis.riskRejectedReasons[0] ?? null;
   const previousRiskReason = previous.analysis.riskRejectedReasons[0] ?? null;
+  const insights = buildDailyTrendInsights(current, previous);
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
@@ -575,6 +667,22 @@ function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
         <div className="text-[11px] text-gray-600">
           {current.date} vs {previous.date}
         </div>
+      </div>
+
+      <div className="mb-3 space-y-2 border-b border-gray-800 pb-3 text-xs">
+        {insights.map((insight) => (
+          <div
+            key={insight.message}
+            className={cn(
+              "rounded-lg border px-2 py-1.5",
+              insight.tone === "emerald" && "border-emerald-900 bg-emerald-950/30 text-emerald-200",
+              insight.tone === "amber" && "border-amber-900 bg-amber-950/30 text-amber-200",
+              insight.tone === "red" && "border-red-900 bg-red-950/30 text-red-200"
+            )}
+          >
+            {insight.message}
+          </div>
+        ))}
       </div>
 
       <div className="space-y-3 text-xs">

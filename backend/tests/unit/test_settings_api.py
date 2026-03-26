@@ -112,6 +112,21 @@ async def test_min_buy_final_score_roundtrip(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_blocked_buy_hour_blocks_roundtrip(monkeypatch: pytest.MonkeyPatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(settings_module, "record_audit_event", lambda **_kwargs: _noop())
+
+    response = await settings_module.set_blocked_buy_hour_blocks(
+        settings_module.BlockedBuyHourBlocksRequest(blocks=["08-12", "04-08", "08-12"])
+    )
+    current = await settings_module.get_blocked_buy_hour_blocks()
+
+    assert response == {"blocks": ["04-08", "08-12"]}
+    assert current == {"blocks": ["04-08", "08-12"]}
+
+
+@pytest.mark.asyncio
 async def test_hold_stale_minutes_roundtrip(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     monkeypatch.setattr(settings_module, "_get_redis", lambda: fake_redis)

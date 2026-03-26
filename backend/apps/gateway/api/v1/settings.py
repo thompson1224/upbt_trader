@@ -24,6 +24,7 @@ AUTO_TRADE_REDIS_KEY = "auto_trade:enabled"
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
 MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
+BLOCKED_BUY_HOUR_BLOCKS_REDIS_KEY = "settings:blocked_buy_hour_blocks"
 HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
 EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
 TRANSITION_RECOMMENDATION_SETTINGS_REDIS_KEY = "settings:transition_recommendation"
@@ -31,6 +32,7 @@ RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
 RUNTIME_STATE_LOSS_STREAK_KEY = "risk.loss_streak"
 RUNTIME_STATE_LOSS_STREAK_DATE_KEY = "risk.loss_streak.date"
+ALLOWED_KST_HOUR_BLOCKS = ("00-04", "04-08", "08-12", "12-16", "16-20", "20-24")
 
 
 def _get_redis():
@@ -88,6 +90,10 @@ class ManualTestModeRequest(BaseModel):
 
 class MinBuyFinalScoreRequest(BaseModel):
     value: float
+
+
+class BlockedBuyHourBlocksRequest(BaseModel):
+    blocks: List[str] = []
 
 
 class HoldStaleMinutesRequest(BaseModel):
@@ -253,6 +259,30 @@ def _parse_transition_recommendation_settings(raw: Optional[Union[bytes, str]]) 
     return settings
 
 
+def _normalize_blocked_buy_hour_blocks(req: BlockedBuyHourBlocksRequest) -> List[str]:
+    normalized = sorted({block.strip() for block in req.blocks if block.strip()})
+    invalid = [block for block in normalized if block not in ALLOWED_KST_HOUR_BLOCKS]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid hour blocks: {', '.join(invalid)}",
+        )
+    return normalized
+
+
+def _parse_blocked_buy_hour_blocks(raw: Optional[Union[bytes, str]]) -> List[str]:
+    if raw is None:
+        return []
+    decoded = raw.decode() if isinstance(raw, bytes) else str(raw)
+    try:
+        payload = json.loads(decoded)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [block for block in sorted({str(item).strip() for item in payload}) if block in ALLOWED_KST_HOUR_BLOCKS]
+
+
 # ── Upbit API 키 ────────────────────────────────────────────
 
 @router.post("/secrets/upbit-keys", status_code=204)
@@ -414,6 +444,33 @@ async def get_min_buy_final_score():
         await r.aclose()
     value = float(val.decode()) if val is not None else 0.0
     return {"value": value}
+
+
+@router.patch("/settings/blocked-buy-hour-blocks")
+async def set_blocked_buy_hour_blocks(req: BlockedBuyHourBlocksRequest):
+    normalized = _normalize_blocked_buy_hour_blocks(req)
+    r = _get_redis()
+    try:
+        await r.set(BLOCKED_BUY_HOUR_BLOCKS_REDIS_KEY, json.dumps(normalized))
+    finally:
+        await r.aclose()
+    await record_audit_event(
+        event_type="blocked_buy_hour_blocks_updated",
+        source="settings",
+        message=f"Blocked buy hour blocks updated ({len(normalized)} blocks)",
+        payload={"blocks": normalized},
+    )
+    return {"blocks": normalized}
+
+
+@router.get("/settings/blocked-buy-hour-blocks")
+async def get_blocked_buy_hour_blocks():
+    r = _get_redis()
+    try:
+        val = await r.get(BLOCKED_BUY_HOUR_BLOCKS_REDIS_KEY)
+    finally:
+        await r.aclose()
+    return {"blocks": _parse_blocked_buy_hour_blocks(val)}
 
 
 @router.patch("/settings/hold-stale-minutes")

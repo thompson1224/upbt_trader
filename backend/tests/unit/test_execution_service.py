@@ -12,7 +12,9 @@ from apps.execution_service.main import (
     _extract_total_krw_balance,
     _filter_new_trades,
     _is_buy_signal_below_final_score_threshold,
+    _is_buy_signal_blocked_by_hour_block,
     _is_manual_test_signal,
+    _kst_hour_block,
     _position_management_key,
     _resolve_manual_test_qty,
     _resolve_market_buy_krw_amount,
@@ -326,6 +328,33 @@ def test_min_buy_final_score_only_rejects_regular_buy_signals():
         auto_trade_enabled=True,
         manual_test_mode_enabled=False,
     ) is True
+
+
+def test_kst_hour_block_uses_signal_timestamp_in_korea_timezone():
+    ts = datetime(2026, 3, 26, 0, 30, tzinfo=timezone.utc)
+    assert _kst_hour_block(ts) == "08-12"
+
+
+def test_buy_hour_block_filter_only_rejects_regular_buy_signals():
+    ts = datetime(2026, 3, 26, 0, 30, tzinfo=timezone.utc)
+    assert _is_buy_signal_blocked_by_hour_block(
+        side="buy",
+        signal_ts=ts,
+        blocked_blocks={"08-12"},
+        manual_test_signal=False,
+    ) is True
+    assert _is_buy_signal_blocked_by_hour_block(
+        side="buy",
+        signal_ts=ts,
+        blocked_blocks={"08-12"},
+        manual_test_signal=True,
+    ) is False
+    assert _is_buy_signal_blocked_by_hour_block(
+        side="sell",
+        signal_ts=ts,
+        blocked_blocks={"08-12"},
+        manual_test_signal=False,
+    ) is False
 
 
 def test_expected_profit_threshold_only_applies_to_regular_buy_signals():

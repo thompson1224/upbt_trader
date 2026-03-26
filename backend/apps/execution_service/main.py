@@ -27,7 +27,9 @@ POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
 EXTERNAL_POSITION_SL_REDIS_KEY = "settings:external_position_sl:enabled"
 MANUAL_TEST_MODE_REDIS_KEY = "settings:manual_test_mode:enabled"
 MIN_BUY_FINAL_SCORE_REDIS_KEY = "settings:min_buy_final_score"
+BLOCKED_BUY_HOUR_BLOCKS_REDIS_KEY = "settings:blocked_buy_hour_blocks"
 MANUAL_TEST_STRATEGY_ID = "manual-test"
+ALLOWED_KST_HOUR_BLOCKS = ("00-04", "04-08", "08-12", "12-16", "16-20", "20-24")
 
 
 def _is_market_warning(raw: str | None) -> bool:
@@ -254,6 +256,27 @@ def _is_buy_signal_below_final_score_threshold(
     return final_score < max(min_buy_final_score, 0.0)
 
 
+def _kst_hour_block(ts: datetime | None) -> str:
+    kst = ZoneInfo("Asia/Seoul")
+    current = ts.astimezone(kst) if ts is not None else datetime.now(tz=kst)
+    hour = current.hour
+    start = (hour // 4) * 4
+    end = start + 4
+    return f"{start:02d}-{end:02d}"
+
+
+def _is_buy_signal_blocked_by_hour_block(
+    *,
+    side: str,
+    signal_ts: datetime | None,
+    blocked_blocks: set[str],
+    manual_test_signal: bool,
+) -> bool:
+    if manual_test_signal or side != "buy" or not blocked_blocks:
+        return False
+    return _kst_hour_block(signal_ts) in blocked_blocks
+
+
 def _runtime_state_daily_pnl_key(now: datetime | None = None) -> str:
     kst = ZoneInfo("Asia/Seoul")
     ts = now.astimezone(kst) if now else datetime.now(tz=kst)
@@ -383,6 +406,19 @@ class ExecutionService:
         except Exception as e:
             logger.warning("Failed to read min buy final score from Redis: %s", e)
             return 0.0
+
+    async def _get_blocked_buy_hour_blocks(self) -> set[str]:
+        try:
+            val = await self._redis.get(BLOCKED_BUY_HOUR_BLOCKS_REDIS_KEY)
+            if val is None:
+                return set()
+            payload = json.loads(val.decode())
+            if not isinstance(payload, list):
+                return set()
+            return {str(item).strip() for item in payload if str(item).strip() in ALLOWED_KST_HOUR_BLOCKS}
+        except Exception as e:
+            logger.warning("Failed to read blocked buy hour blocks from Redis: %s", e)
+            return set()
 
     # ── 신호 폴링 루프 ──────────────────────────────────────
 
@@ -721,6 +757,7 @@ class ExecutionService:
         auto_trade_enabled = await self._is_auto_trade_enabled()
         manual_test_mode_enabled = await self._is_manual_test_mode_enabled()
         min_buy_final_score = await self._get_min_buy_final_score()
+        blocked_buy_hour_blocks = await self._get_blocked_buy_hour_blocks()
         manual_test_signal = _is_manual_test_signal(signal.strategy_id)
 
         if not _can_execute_signal(
@@ -771,6 +808,22 @@ class ExecutionService:
                     signal,
                     "rejected",
                     f"Final score {signal.final_score:.2f} < minimum {min_buy_final_score:.2f}",
+                )
+            return
+
+        if _is_buy_signal_blocked_by_hour_block(
+            side=signal.side,
+            signal_ts=signal.ts,
+            blocked_blocks=blocked_buy_hour_blocks,
+            manual_test_signal=manual_test_signal,
+        ):
+            blocked_hour_block = _kst_hour_block(signal.ts)
+            async with self.session_factory() as db:
+                await self._update_signal_status(
+                    db,
+                    signal,
+                    "rejected",
+                    f"Blocked buy hour block {blocked_hour_block} KST",
                 )
             return
 

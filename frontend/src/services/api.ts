@@ -5,6 +5,7 @@ import type {
   DailyReportResponse,
   ExcludedMarketItem,
   ExcludedMarketState,
+  KstHourBlock,
   MarketInfo,
   MarketTransitionQualityRow,
   PerformanceResponse,
@@ -267,6 +268,10 @@ export const api = {
       apiClient.patch("/settings/min-buy-final-score", { value }).then((r) => r.data as { value: number }),
     getMinBuyFinalScore: () =>
       apiClient.get("/settings/min-buy-final-score").then((r) => r.data as { value: number }),
+    setBlockedBuyHourBlocks: (blocks: KstHourBlock[]) =>
+      apiClient.patch("/settings/blocked-buy-hour-blocks", { blocks }).then((r) => r.data as { blocks: KstHourBlock[] }),
+    getBlockedBuyHourBlocks: () =>
+      apiClient.get("/settings/blocked-buy-hour-blocks").then((r) => r.data as { blocks: KstHourBlock[] }),
     setHoldStaleMinutes: (value: number) =>
       apiClient.patch("/settings/hold-stale-minutes", { value }).then((r) => r.data as { value: number }),
     getHoldStaleMinutes: () =>

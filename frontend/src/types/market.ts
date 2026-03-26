@@ -41,6 +41,8 @@ export interface TransitionRecommendationSettings {
   restore_max_hold_to_hold_rate: number;
 }
 
+export type KstHourBlock = "00-04" | "04-08" | "08-12" | "12-16" | "16-20" | "20-24";
+
 export interface CandleData {
   ts: string;
   open: number;
