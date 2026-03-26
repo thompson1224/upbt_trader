@@ -35,6 +35,7 @@
   - `auto-trade` fail-closed
   - signal claim 기반 중복 실행 완화
   - orphaned `approved` 신호 복구
+  - `daily loss` / `loss streak` 리스크 가드는 신규 `buy`만 차단하고 `sell`은 막지 않도록 수정
 
 ## 주의
 
@@ -50,6 +51,7 @@
 - `risk_service`, `backtest_service` 실제 서비스화
 - 워크포워드 / 아웃오브샘플 검증 체계화
 - 장기 비교용 일일 운영 리포트 시각화 확장
+- 리스크 가드 수정 후 실제 운영에서 새 `sell` 신호가 정상 통과하는지 추가 관찰
 
 ## 현재 판단
 

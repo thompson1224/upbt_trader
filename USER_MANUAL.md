@@ -372,6 +372,7 @@ http://localhost:3000/performance/market/KRW-BTC
 - Redis에서 자동매매 상태를 읽지 못하면 기본적으로 `OFF`로 처리됩니다. 운영 안전 기준으로 fail-closed 동작입니다.
 - OFF 상태에서도 **SL/TP 청산은 계속 동작** (손실 방지)
 - ON 상태이면 AI 신호 발생 즉시 자동 주문 실행
+- 연속 손실/일일 손실 제한은 신규 진입(`buy`)만 차단하며, 보유 포지션 정리용 `sell`은 막지 않습니다.
 
 > ⚠️ **실제 자산이 거래됩니다. 처음에는 소액으로 테스트하세요.**
 
@@ -608,8 +609,8 @@ http://localhost:3000/performance/market/KRW-BTC
   │     └─ 그 외 보유 포지션은 HOLD 유지
   ├─ [Risk Guard 검증]
   │     ├─ 시장 경보 코인(CAUTION/WARNING) → REJECT
-  │     ├─ 일일 손실 ≥ 3% → REJECT
-  │     ├─ 연속 손실 5회 이상 → REJECT
+  │     ├─ 일일 손실 ≥ 3% → 신규 `buy`만 REJECT
+  │     ├─ 연속 손실 5회 이상 → 신규 `buy`만 REJECT
   │     ├─ 동시 보유 5종목 초과 → REJECT
   │     ├─ 단건 금액 > 총자산 1% → 수량 축소 후 APPROVE
   │     └─ 포지션 비중 > 10% → 수량 축소 후 APPROVE
@@ -633,6 +634,7 @@ http://localhost:3000/performance/market/KRW-BTC
 - 같은 `new` 신호는 먼저 claim 한 워커만 실행합니다.
 - 재시작 후 `approved` 상태인데 실제 주문이 없는 신호는 다시 `new`로 복구합니다.
 - `auto-trade` 설정을 읽을 수 없으면 거래를 계속 진행하지 않고 기본적으로 `OFF`로 간주합니다.
+- `daily loss`, `loss_streak` 리스크 가드는 신규 진입 제어용이며, 포지션 정리 목적의 `sell`은 차단하지 않습니다.
 
 ---
 

@@ -50,23 +50,23 @@ class PreTradeRiskGuard:
         if account.market_warning:
             return RiskDecision(False, f"Market warning active for {market}")
 
-        # 2. 일일 손실 한도
-        daily_loss_pct = abs(account.daily_pnl) / max(account.total_equity, 1)
-        if account.daily_pnl < 0 and daily_loss_pct >= self.settings.risk_max_daily_loss_pct:
-            return RiskDecision(
-                False,
-                f"Daily loss limit reached: {daily_loss_pct:.1%} >= {self.settings.risk_max_daily_loss_pct:.1%}",
-            )
-
-        # 3. 연속 손실 제한
-        if account.consecutive_losses >= self.MAX_CONSECUTIVE_LOSSES:
-            return RiskDecision(
-                False,
-                f"Max consecutive losses reached: {account.consecutive_losses}",
-            )
-
-        # 4. 매수 전용 추가 체크
+        # 2. 매수 전용 추가 체크
         if side == "buy":
+            # 일일 손실 한도는 신규 진입만 차단한다.
+            daily_loss_pct = abs(account.daily_pnl) / max(account.total_equity, 1)
+            if account.daily_pnl < 0 and daily_loss_pct >= self.settings.risk_max_daily_loss_pct:
+                return RiskDecision(
+                    False,
+                    f"Daily loss limit reached: {daily_loss_pct:.1%} >= {self.settings.risk_max_daily_loss_pct:.1%}",
+                )
+
+            # 연속 손실 제한도 신규 진입만 차단한다.
+            if account.consecutive_losses >= self.MAX_CONSECUTIVE_LOSSES:
+                return RiskDecision(
+                    False,
+                    f"Max consecutive losses reached: {account.consecutive_losses}",
+                )
+
             # 최대 동시 포지션 수
             if account.open_positions_count >= self.MAX_OPEN_POSITIONS:
                 return RiskDecision(
