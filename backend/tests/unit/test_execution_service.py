@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
+from apps.execution_service import main as execution_module
 from apps.execution_service.main import (
+    ExecutionService,
     _can_execute_signal,
     _default_protection_levels,
     _extract_exchange_position_rows,
@@ -25,6 +28,17 @@ from apps.execution_service.main import (
 )
 
 
+class _AsyncSessionContext:
+    def __init__(self, db):
+        self._db = db
+
+    async def __aenter__(self):
+        return self._db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def test_extract_exchange_position_rows_separates_krw_and_assets():
     balances = [
         {"currency": "KRW", "balance": "1000.5", "locked": "25.25", "avg_buy_price": "0"},
@@ -38,6 +52,145 @@ def test_extract_exchange_position_rows_separates_krw_and_assets():
     assert set(positions) == {"BTC"}
     assert positions["BTC"]["qty"] == pytest.approx(0.0012)
     assert positions["BTC"]["avg_entry_price"] == 100000000.0
+
+
+@pytest.mark.asyncio
+async def test_auto_trade_flag_fails_closed_on_redis_error(monkeypatch: pytest.MonkeyPatch):
+    class _FailRedis:
+        async def get(self, _key):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(object()))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: _FailRedis())
+
+    service = ExecutionService()
+
+    assert await service._is_auto_trade_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_auto_trade_flag_defaults_closed_when_key_missing(monkeypatch: pytest.MonkeyPatch):
+    class _MissingRedis:
+        async def get(self, _key):
+            return None
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(object()))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: _MissingRedis())
+
+    service = ExecutionService()
+
+    assert await service._is_auto_trade_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_claim_signal_for_execution_uses_conditional_update(monkeypatch: pytest.MonkeyPatch):
+    class _ClaimDB:
+        def __init__(self):
+            self.committed = False
+
+        async def execute(self, _statement):
+            return SimpleNamespace(rowcount=1)
+
+        async def commit(self):
+            self.committed = True
+
+    db = _ClaimDB()
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(db))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: object())
+
+    service = ExecutionService()
+
+    assert await service._claim_signal_for_execution(123) is True
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_claim_signal_for_execution_returns_false_when_already_claimed(monkeypatch: pytest.MonkeyPatch):
+    class _ClaimDB:
+        async def execute(self, _statement):
+            return SimpleNamespace(rowcount=0)
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(_ClaimDB()))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: object())
+
+    service = ExecutionService()
+
+    assert await service._claim_signal_for_execution(123) is False
+
+
+@pytest.mark.asyncio
+async def test_recover_orphaned_claimed_signals_marks_existing_orders_executed(monkeypatch: pytest.MonkeyPatch):
+    approved_with_order = SimpleNamespace(id=1, status="approved")
+    approved_without_order = SimpleNamespace(id=2, status="approved")
+
+    class _RecoveryDB:
+        def __init__(self):
+            self.calls = 0
+            self.committed = False
+
+        async def execute(self, _statement):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    scalars=lambda: SimpleNamespace(all=lambda: [approved_with_order, approved_without_order])
+                )
+            if self.calls == 2:
+                return SimpleNamespace(scalar_one_or_none=lambda: 101)
+            if self.calls == 3:
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
+            raise AssertionError("Unexpected execute call")
+
+        async def commit(self):
+            self.committed = True
+
+    db = _RecoveryDB()
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(db))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: object())
+
+    service = ExecutionService()
+    await service._recover_orphaned_claimed_signals()
+
+    assert approved_with_order.status == "executed"
+    assert approved_without_order.status == "new"
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_get_existing_order_id_returns_order_id(monkeypatch: pytest.MonkeyPatch):
+    class _OrderLookupDB:
+        async def execute(self, _statement):
+            return SimpleNamespace(scalar_one_or_none=lambda: 77)
+
+    monkeypatch.setattr(execution_module, "UpbitRestClient", lambda: object())
+    monkeypatch.setattr(execution_module, "PreTradeRiskGuard", lambda: object())
+    monkeypatch.setattr(execution_module, "PositionSizer", lambda: SimpleNamespace())
+    monkeypatch.setattr(execution_module, "get_session_factory", lambda: lambda: _AsyncSessionContext(_OrderLookupDB()))
+    monkeypatch.setattr(execution_module.aioredis, "from_url", lambda _url: object())
+
+    service = ExecutionService()
+
+    async with service.session_factory() as db:
+        assert await service._get_existing_order_id(db, 12) == 77
 
 
 def test_extract_total_krw_balance_includes_locked_krw():

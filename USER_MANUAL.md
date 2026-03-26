@@ -258,6 +258,15 @@ docker compose top execution
 대시보드 하단 `실거래 성과` 패널에서 다음을 바로 확인할 수 있습니다.
 
 - 순손익, 승률, Profit Factor, 최대 낙폭
+- 오늘 운영 요약
+  - 오늘 손익
+  - 연속 손실
+  - 종료 거래 승/패
+  - 열린 포지션 수
+  - 제외 코인 수
+  - 리스크 거절 수
+  - 주문 실패 수
+  - 가장 약한 열린 포지션 1건
 - 시장별 손익
 - 청산 사유별 손익
 - 기간 필터 `7D / 30D / ALL`
@@ -331,6 +340,7 @@ http://localhost:3000/performance/market/KRW-BTC
 | ON → OFF | 즉시 비활성화 |
 
 - 상태는 Redis에 저장되어 **서버 재시작 후에도 유지**
+- Redis에서 자동매매 상태를 읽지 못하면 기본적으로 `OFF`로 처리됩니다. 운영 안전 기준으로 fail-closed 동작입니다.
 - OFF 상태에서도 **SL/TP 청산은 계속 동작** (손실 방지)
 - ON 상태이면 AI 신호 발생 즉시 자동 주문 실행
 
@@ -550,8 +560,10 @@ http://localhost:3000/performance/market/KRW-BTC
 ─── 주문 실행 (5초마다 폴링) ────────────────────────────────────
 [Execution Service]
   ├─ Redis "auto_trade:enabled" 확인
-  │     OFF → 신호 처리 생략 (SL/TP는 계속 동작)
+  │     OFF 또는 Redis 읽기 실패 → 신호 처리 생략 (SL/TP는 계속 동작)
   ├─ 새 BUY/SELL 신호 조회
+  ├─ 같은 신호를 먼저 `approved`로 claim
+  │     └─ 이미 다른 워커가 claim 했으면 skip
   ├─ Upbit REST API로 현재가(ticker) 조회
   ├─ 보유 포지션이면 entry 규칙과 별도 exit 규칙 적용
   │     ├─ `ta_score <= -0.15` → 강제 SELL
@@ -578,6 +590,12 @@ http://localhost:3000/performance/market/KRW-BTC
   ├─ 현재가 ≤ SL → 시장가 매도 + trade_event 발행
   └─ 현재가 ≥ TP → 시장가 매도 + trade_event 발행
 ```
+
+운영 안정성 메모:
+
+- 같은 `new` 신호는 먼저 claim 한 워커만 실행합니다.
+- 재시작 후 `approved` 상태인데 실제 주문이 없는 신호는 다시 `new`로 복구합니다.
+- `auto-trade` 설정을 읽을 수 없으면 거래를 계속 진행하지 않고 기본적으로 `OFF`로 간주합니다.
 
 ---
 
@@ -878,6 +896,7 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/portfolio/equity-curve` | 수익 곡선 | `limit`, `days` |
 | GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
 | GET | `/api/v1/portfolio/transition-quality/{market}` | 특정 코인의 신호 전환 품질 | `days` |
+| GET | `/api/v1/portfolio/daily-report` | 오늘 운영 요약 | — |
 | GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `market`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |

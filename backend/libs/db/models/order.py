@@ -1,5 +1,5 @@
 from typing import Optional
-from sqlalchemy import Integer, Float, String, DateTime, ForeignKey, Index
+from sqlalchemy import Integer, Float, String, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import mapped_column, Mapped, relationship
 from datetime import datetime
 from .base import Base, TimestampMixin
@@ -9,6 +9,7 @@ class Order(Base, TimestampMixin):
     __tablename__ = "orders"
     __table_args__ = (
         Index("ix_orders_state_ts", "state", "created_at"),
+        UniqueConstraint("signal_id", name="uq_orders_signal_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

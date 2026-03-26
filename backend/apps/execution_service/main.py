@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from libs.config import get_settings
 from libs.db.session import get_session_factory
@@ -323,6 +324,7 @@ class ExecutionService:
     async def run(self):
         logger.info("Execution service started.")
         await self._restore_runtime_state_from_db()
+        await self._recover_orphaned_claimed_signals()
         daily_pnl, loss_streak = await self._compute_risk_metrics()
         await self._persist_risk_metrics_to_db(daily_pnl, loss_streak)
         try:
@@ -341,16 +343,17 @@ class ExecutionService:
 
     async def _is_auto_trade_enabled(self) -> bool:
         """Redis의 auto_trade:enabled 키를 읽어 ON/OFF 반환.
-        키 부재 또는 Redis 장애 시 True (기존 동작 유지).
+        키 부재 또는 Redis 장애 시 False (fail-closed).
         """
         try:
             val = await self._redis.get("auto_trade:enabled")
             if val is None:
-                return True  # 키 없음 = 기본값 활성화
+                logger.warning("auto_trade flag missing in Redis; fail-closed to disabled")
+                return False
             return val.decode() == "1"
         except Exception as e:
             logger.warning("Failed to read auto_trade flag from Redis: %s", e)
-            return True  # Redis 장애 시 폴백: 거래 허용
+            return False
 
     async def _is_external_position_stop_loss_enabled(self) -> bool:
         """외부 보유분 자동 손절 설정 조회. 기본값은 False."""
@@ -644,6 +647,14 @@ class ExecutionService:
         if state is not None:
             await db.delete(state)
 
+    async def _get_existing_order_id(self, db, signal_id: int) -> int | None:
+        result = await db.execute(
+            select(Order.id)
+            .where(Order.signal_id == signal_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def _process_new_signals(self):
         auto_trade_enabled = await self._is_auto_trade_enabled()
         manual_test_mode_enabled = await self._is_manual_test_mode_enabled()
@@ -669,6 +680,43 @@ class ExecutionService:
         for signal in signals:
             await self._execute_signal(signal)
 
+    async def _claim_signal_for_execution(self, signal_id: int) -> bool:
+        async with self.session_factory() as db:
+            result = await db.execute(
+                update(Signal)
+                .where(Signal.id == signal_id)
+                .where(Signal.status == "new")
+                .values(status="approved", rejection_reason=None)
+            )
+            await db.commit()
+            return (result.rowcount or 0) > 0
+
+    async def _recover_orphaned_claimed_signals(self) -> None:
+        async with self.session_factory() as db:
+            result = await db.execute(
+                select(Signal).where(Signal.status == "approved")
+            )
+            approved_signals = result.scalars().all()
+
+            recovered_new = 0
+            recovered_executed = 0
+            for signal in approved_signals:
+                existing_order_id = await self._get_existing_order_id(db, signal.id)
+                if existing_order_id is not None:
+                    signal.status = "executed"
+                    recovered_executed += 1
+                    continue
+                signal.status = "new"
+                recovered_new += 1
+
+            if recovered_new > 0 or recovered_executed > 0:
+                await db.commit()
+                logger.warning(
+                    "Recovered claimed signals: %s back to new, %s marked executed from existing orders",
+                    recovered_new,
+                    recovered_executed,
+                )
+
     async def _execute_signal(self, signal: Signal):
         auto_trade_enabled = await self._is_auto_trade_enabled()
         manual_test_mode_enabled = await self._is_manual_test_mode_enabled()
@@ -688,6 +736,27 @@ class ExecutionService:
                 signal.strategy_id,
             )
             return  # 상태 "new" 유지 → 재활성화 시 재처리
+
+        claimed = await self._claim_signal_for_execution(signal.id)
+        if not claimed:
+            logger.info("Signal %s already claimed or processed by another worker", signal.id)
+            return
+
+        async with self.session_factory() as db:
+            existing_order_id = await self._get_existing_order_id(db, signal.id)
+            if existing_order_id is not None:
+                await self._update_signal_status(
+                    db,
+                    signal,
+                    "executed",
+                    "Existing order already recorded",
+                )
+                logger.warning(
+                    "Signal %s already has order %s; skipping duplicate execution",
+                    signal.id,
+                    existing_order_id,
+                )
+                return
 
         # ── 최소 수익 임계값 확인 (수수료 보전) ─────────────
         if _is_buy_signal_below_final_score_threshold(
@@ -717,6 +786,21 @@ class ExecutionService:
         async with self.session_factory() as db:
             coin = await db.get(Coin, signal.coin_id)
             if not coin:
+                return
+
+            existing_order_id = await self._get_existing_order_id(db, signal.id)
+            if existing_order_id is not None:
+                await self._update_signal_status(
+                    db,
+                    signal,
+                    "executed",
+                    "Existing order already recorded",
+                )
+                logger.warning(
+                    "Signal %s already has order %s inside execution transaction; skipping duplicate execution",
+                    signal.id,
+                    existing_order_id,
+                )
                 return
 
             pos_result = await db.execute(
@@ -919,20 +1003,41 @@ class ExecutionService:
                 )
 
             async with self.session_factory() as db:
-                order = Order(
-                    signal_id=signal.id,
-                    coin_id=signal.coin_id,
-                    exchange_order_id=result.get("uuid"),
-                    side="bid" if signal.side == "buy" else "ask",
-                    ord_type="price" if signal.side == "buy" else "market",
-                    price=entry_price,
-                    volume=order_volume,
-                    state=result.get("state", "wait"),
-                    requested_at=datetime.now(tz=timezone.utc),
-                )
-                db.add(order)
-                await self._update_signal_status(db, signal, "executed", None)
-                await db.commit()
+                try:
+                    order = Order(
+                        signal_id=signal.id,
+                        coin_id=signal.coin_id,
+                        exchange_order_id=result.get("uuid"),
+                        side="bid" if signal.side == "buy" else "ask",
+                        ord_type="price" if signal.side == "buy" else "market",
+                        price=entry_price,
+                        volume=order_volume,
+                        state=result.get("state", "wait"),
+                        requested_at=datetime.now(tz=timezone.utc),
+                    )
+                    db.add(order)
+                    db_signal = await db.get(Signal, signal.id)
+                    if db_signal:
+                        db_signal.status = "executed"
+                        db_signal.rejection_reason = None
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+                    existing_order_id = await self._get_existing_order_id(db, signal.id)
+                    if existing_order_id is not None:
+                        await self._update_signal_status(
+                            db,
+                            signal,
+                            "executed",
+                            "Existing order already recorded",
+                        )
+                        logger.warning(
+                            "Duplicate order insert blocked for signal %s; existing order %s reused",
+                            signal.id,
+                            existing_order_id,
+                        )
+                        return
+                    raise
 
             logger.info(
                 "Order placed: %s %s qty=%.6f uuid=%s",
