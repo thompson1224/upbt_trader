@@ -51,7 +51,17 @@ class _FakeRowsResult:
         return self.rows
 
     def scalars(self):
-        return iter(self.rows)
+        class _Scalars:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def all(self):
+                return self._rows
+
+            def __iter__(self):
+                return iter(self._rows)
+
+        return _Scalars(self.rows)
 
 
 class _FakeDB:
@@ -730,6 +740,25 @@ def test_get_market_transition_quality_returns_default_for_unknown_market():
     }
 
 
+def test_parse_excluded_market_state_supports_metadata_payload():
+    state = portfolio_module._parse_excluded_market_state(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "market": "krw-btc",
+                        "reason": "hold->sell 낮음",
+                        "updated_at": "2026-03-26T01:00:00+09:00",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert state["markets"] == ["KRW-BTC"]
+    assert state["items"][0]["reason"] == "hold->sell 낮음"
+
+
 @pytest.mark.asyncio
 async def test_get_portfolio_performance_reads_from_cache(monkeypatch: pytest.MonkeyPatch):
     cached_payload = {
@@ -1022,6 +1051,112 @@ async def test_get_market_transition_quality_filters_single_market():
     assert response["holdToSellCount"] == 1
     assert response["holdToHoldCount"] == 0
     assert response["holdToSellRate"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(monkeypatch: pytest.MonkeyPatch):
+    buy_fill = SimpleNamespace(
+        id=1,
+        price=100.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 26, 0, 10, tzinfo=timezone.utc),
+    )
+    sell_fill = SimpleNamespace(
+        id=2,
+        price=110.0,
+        volume=1.0,
+        fee=0.055,
+        filled_at=datetime(2026, 3, 26, 1, 10, tzinfo=timezone.utc),
+    )
+    buy_order = SimpleNamespace(side="bid", rejected_reason=None, signal_id=1, coin_id=1)
+    sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 110 >= 106", signal_id=None, coin_id=1)
+    buy_signal = SimpleNamespace(
+        id=1,
+        coin_id=1,
+        strategy_id="hybrid_v1",
+        ts=datetime(2026, 3, 26, 0, 0, tzinfo=timezone.utc),
+        ta_score=0.4,
+        sentiment_score=0.3,
+        final_score=0.36,
+        confidence=0.9,
+        side="buy",
+    )
+    open_position = Position(
+        id=3,
+        coin_id=2,
+        qty=2.5,
+        avg_entry_price=150.0,
+        unrealized_pnl=-12.0,
+        realized_pnl=5.0,
+        source="strategy",
+    )
+    risk_event = SimpleNamespace(
+        event_type="risk_rejected",
+        created_at=datetime(2026, 3, 26, 3, 0, tzinfo=timezone.utc),
+    )
+    fail_event = SimpleNamespace(
+        event_type="order_failed",
+        created_at=datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc),
+    )
+    exclude_event = SimpleNamespace(
+        event_type="excluded_market_added",
+        created_at=datetime(2026, 3, 26, 5, 0, tzinfo=timezone.utc),
+    )
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 3, 26, 12, 0, tzinfo=tz or timezone.utc)
+
+    class _DailyReportDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is portfolio_module.Fill:
+                return _FakeRowsResult(
+                    [
+                        (buy_fill, buy_order, "KRW-BTC", buy_signal),
+                        (sell_fill, sell_order, "KRW-BTC", None),
+                    ]
+                )
+            if entity is portfolio_module.AuditEvent:
+                return _FakeRowsResult([risk_event, fail_event, exclude_event])
+            if entity is portfolio_module.Position:
+                return _FakeRowsResult([(open_position, "KRW-ETH")])
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+    fake_redis = _FakeRedis()
+    fake_redis.values["risk:daily_pnl:20260326"] = "1234.5"
+    fake_redis.values[portfolio_module.RISK_LOSS_STREAK_REDIS_KEY] = "2"
+    fake_redis.values[portfolio_module.EXCLUDED_MARKETS_REDIS_KEY] = json.dumps(
+        {
+            "items": [
+                {
+                    "market": "KRW-ETH",
+                    "reason": "장기 hold 과다",
+                    "updated_at": "2026-03-26T09:00:00+09:00",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
+    monkeypatch.setattr(portfolio_module, "datetime", _FrozenDateTime)
+
+    response = await portfolio_module.get_daily_report(db=_DailyReportDB())
+
+    assert response["date"] == "20260326"
+    assert response["summary"]["dailyPnl"] == pytest.approx(1234.5)
+    assert response["summary"]["lossStreak"] == 2
+    assert response["summary"]["closedTrades"] == 1
+    assert response["summary"]["openPositions"] == 1
+    assert response["summary"]["excludedMarkets"] == 1
+    assert response["summary"]["riskRejectedCount"] == 1
+    assert response["summary"]["orderFailedCount"] == 1
+    assert response["summary"]["excludedOpsCount"] == 1
+    assert response["byExitReason"][0]["exitReason"] == "take_profit"
+    assert response["positions"][0]["market"] == "KRW-ETH"
+    assert response["positions"][0]["excluded"] is True
+    assert response["positions"][0]["excludedReason"] == "장기 hold 과다"
 
 
 async def _noop():

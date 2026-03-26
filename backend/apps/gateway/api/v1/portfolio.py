@@ -15,7 +15,7 @@ from sqlalchemy import select
 from libs.audit import record_audit_event
 from libs.config import get_settings
 from libs.db.session import get_db
-from libs.db.models import Position, Coin, RuntimeState, Fill, Order, Signal
+from libs.db.models import AuditEvent, Position, Coin, RuntimeState, Fill, Order, Signal
 from libs.signal_reason import humanize_signal_reason
 
 router = APIRouter()
@@ -28,6 +28,8 @@ POSITION_SOURCE_EXTERNAL = "external"
 POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
 KST = timezone(timedelta(hours=9))
 HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
+EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
+RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 
 
 class PositionAutoTradeRequest(BaseModel):
@@ -58,6 +60,48 @@ def _performance_cache_key(limit: int, days: Optional[int], market: Optional[str
     range_key = "all" if days is None else f"{days}d"
     market_key = (market or "all").upper().replace(":", "_")
     return f"{PORTFOLIO_PERFORMANCE_CACHE_KEY_PREFIX}{limit}:{range_key}:{market_key}"
+
+
+def _current_kst_date_key(now: datetime | None = None) -> str:
+    current = now.astimezone(KST) if now is not None else datetime.now(KST)
+    return current.strftime("%Y%m%d")
+
+
+def _current_kst_day_start_utc(now: datetime | None = None) -> datetime:
+    current = now.astimezone(KST) if now is not None else datetime.now(KST)
+    day_start_kst = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start_kst.astimezone(timezone.utc)
+
+
+def _parse_excluded_market_state(raw: str | bytes | None) -> dict:
+    if raw is None:
+        return {"markets": [], "items": []}
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"markets": [], "items": []}
+    if isinstance(parsed, list):
+        markets = [str(item).upper() for item in parsed]
+        return {"markets": markets, "items": [{"market": market, "reason": "", "updated_at": ""} for market in markets]}
+    items = parsed.get("items") if isinstance(parsed, dict) else None
+    normalized_items = []
+    for item in items or []:
+        market = str(item.get("market", "")).upper()
+        if not market:
+            continue
+        normalized_items.append(
+            {
+                "market": market,
+                "reason": str(item.get("reason", "") or ""),
+                "updated_at": str(item.get("updated_at", "") or ""),
+            }
+        )
+    return {
+        "markets": [item["market"] for item in normalized_items],
+        "items": normalized_items,
+    }
 
 
 def _default_protection_levels(
@@ -908,3 +952,129 @@ async def get_market_transition_quality(
         for signal, market_code in signal_result.all()
     ]
     return _get_market_transition_quality(signal_rows, normalized_market)
+
+
+@router.get("/portfolio/daily-report")
+async def get_daily_report(db: AsyncSession = Depends(get_db)):
+    start_utc = _current_kst_day_start_utc()
+    date_key = _current_kst_date_key()
+
+    fill_stmt = (
+        select(Fill, Order, Coin.market, Signal)
+        .join(Order, Fill.order_id == Order.id)
+        .join(Coin, Order.coin_id == Coin.id)
+        .outerjoin(Signal, Order.signal_id == Signal.id)
+        .where(Fill.filled_at >= start_utc)
+        .order_by(Fill.filled_at.asc(), Fill.id.asc())
+    )
+    fill_rows_result = await db.execute(fill_stmt)
+    fill_rows = [
+        {
+            "market": market,
+            "side": order.side,
+            "price": fill.price,
+            "volume": fill.volume,
+            "fee": fill.fee,
+            "filledAt": fill.filled_at,
+            "signal": signal,
+            "orderReason": order.rejected_reason,
+            "strategyId": signal.strategy_id if signal else None,
+            "taScore": signal.ta_score if signal else None,
+            "sentimentScore": signal.sentiment_score if signal else None,
+            "finalScore": signal.final_score if signal else None,
+            "confidence": signal.confidence if signal else None,
+        }
+        for fill, order, market, signal in fill_rows_result.all()
+    ]
+    trades = _build_closed_trades(fill_rows)
+
+    audit_stmt = (
+        select(AuditEvent)
+        .where(AuditEvent.created_at >= start_utc)
+        .order_by(AuditEvent.created_at.desc())
+    )
+    audit_rows = (await db.execute(audit_stmt)).scalars().all()
+    risk_rejected_count = sum(1 for row in audit_rows if row.event_type == "risk_rejected")
+    order_failed_count = sum(1 for row in audit_rows if row.event_type == "order_failed")
+    excluded_ops_count = sum(
+        1
+        for row in audit_rows
+        if row.event_type in {
+            "excluded_market_added",
+            "excluded_market_restored",
+            "excluded_market_reason_updated",
+        }
+    )
+
+    position_stmt = (
+        select(Position, Coin.market)
+        .join(Coin, Position.coin_id == Coin.id)
+        .where(Position.qty > 0)
+        .order_by(Position.unrealized_pnl.asc(), Coin.market.asc())
+    )
+    position_rows = (await db.execute(position_stmt)).all()
+
+    redis_client = None
+    excluded_state = {"markets": [], "items": []}
+    daily_pnl_value = 0.0
+    loss_streak = 0
+    try:
+        redis_client = _get_redis()
+        daily_pnl_raw = await redis_client.get(f"risk:daily_pnl:{date_key}")
+        loss_streak_raw = await redis_client.get(RISK_LOSS_STREAK_REDIS_KEY)
+        excluded_raw = await redis_client.get(EXCLUDED_MARKETS_REDIS_KEY)
+        if daily_pnl_raw is not None:
+            daily_pnl_value = float(
+                daily_pnl_raw.decode() if isinstance(daily_pnl_raw, bytes) else daily_pnl_raw
+            )
+        if loss_streak_raw is not None:
+            loss_streak = int(
+                loss_streak_raw.decode() if isinstance(loss_streak_raw, bytes) else loss_streak_raw
+            )
+        excluded_state = _parse_excluded_market_state(excluded_raw)
+    finally:
+        if redis_client is not None:
+            await redis_client.aclose()
+
+    return {
+        "date": date_key,
+        "summary": {
+            "dailyPnl": daily_pnl_value,
+            "lossStreak": loss_streak,
+            "closedTrades": len(trades),
+            "wins": sum(1 for trade in trades if trade["netPnl"] > 0),
+            "losses": sum(1 for trade in trades if trade["netPnl"] < 0),
+            "netPnl": sum(trade["netPnl"] for trade in trades),
+            "openPositions": len(position_rows),
+            "excludedMarkets": len(excluded_state["markets"]),
+            "riskRejectedCount": risk_rejected_count,
+            "orderFailedCount": order_failed_count,
+            "excludedOpsCount": excluded_ops_count,
+        },
+        "byExitReason": _group_performance(trades, "exitReason"),
+        "positions": [
+            {
+                "market": market,
+                "source": position.source,
+                "qty": position.qty,
+                "avgEntryPrice": position.avg_entry_price,
+                "unrealizedPnl": position.unrealized_pnl,
+                "realizedPnl": position.realized_pnl,
+                "excluded": market in excluded_state["markets"],
+                "excludedReason": next(
+                    (
+                        item["reason"]
+                        for item in excluded_state["items"]
+                        if item["market"] == market
+                    ),
+                    "",
+                ),
+            }
+            for position, market in position_rows
+        ],
+        "recentAuditCounts": {
+            "riskRejected": risk_rejected_count,
+            "orderFailed": order_failed_count,
+            "excludedOps": excluded_ops_count,
+        },
+    }

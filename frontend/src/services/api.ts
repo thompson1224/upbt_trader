@@ -2,6 +2,7 @@ import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
 import type {
   AuditEvent,
+  DailyReportResponse,
   ExcludedMarketItem,
   ExcludedMarketState,
   MarketInfo,
@@ -227,6 +228,8 @@ export const api = {
           },
         })
         .then((r) => r.data as MarketTransitionQualityRow),
+    dailyReport: () =>
+      apiClient.get("/portfolio/daily-report").then((r) => r.data as DailyReportResponse),
   },
   backtests: {
     create: (payload: object) =>

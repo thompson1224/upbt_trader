@@ -7,6 +7,7 @@ import { BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
 import type {
+  DailyReportResponse,
   ExcludedMarketItem,
   ExcludedMarketState,
   MarketTransitionQualityRow,
@@ -371,6 +372,80 @@ function MarketTransitionQualityList({
   );
 }
 
+function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
+  const summary = report.summary;
+  const weakestPosition = report.positions[0] ?? null;
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          오늘 운영 요약
+        </div>
+        <div className="font-mono text-[11px] text-gray-600">{report.date}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <div className="text-gray-500">오늘 손익</div>
+          <div className={cn("font-mono font-semibold", summary.dailyPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatCurrency(summary.dailyPnl)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">연속 손실</div>
+          <div className={cn("font-mono font-semibold", summary.lossStreak >= 3 ? "text-amber-300" : "text-gray-200")}>
+            {summary.lossStreak}회
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">닫힌 거래</div>
+          <div className="font-mono text-gray-200">
+            {summary.closedTrades}건 · 승 {summary.wins} / 패 {summary.losses}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">열린 포지션</div>
+          <div className="font-mono text-gray-200">
+            {summary.openPositions}건 · 제외 {summary.excludedMarkets}개
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">리스크 거절</div>
+          <div className={cn("font-mono", summary.riskRejectedCount > 0 ? "text-amber-300" : "text-gray-200")}>
+            {summary.riskRejectedCount}건
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500">주문 실패</div>
+          <div className={cn("font-mono", summary.orderFailedCount > 0 ? "text-red-300" : "text-gray-200")}>
+            {summary.orderFailedCount}건
+          </div>
+        </div>
+      </div>
+      {weakestPosition && (
+        <div className="mt-3 border-t border-gray-800 pt-3 text-xs">
+          <div className="mb-1 text-gray-500">가장 약한 열린 포지션</div>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Link
+                href={`/performance/market/${weakestPosition.market}`}
+                className="font-mono text-sky-300 hover:text-sky-200"
+              >
+                {weakestPosition.market}
+              </Link>
+              <div className="text-gray-600">
+                {weakestPosition.excluded ? `excluded · ${weakestPosition.excludedReason || "사유 없음"}` : weakestPosition.source}
+              </div>
+            </div>
+            <div className={cn("font-mono font-semibold", weakestPosition.unrealizedPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+              {formatCurrency(weakestPosition.unrealizedPnl)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PerformancePanel() {
   const [days, setDays] = useState<number | null>(30);
   const [pendingMarket, setPendingMarket] = useState<string | null>(null);
@@ -388,6 +463,11 @@ export default function PerformancePanel() {
   const { data: recommendationSettings } = useQuery<TransitionRecommendationSettings>({
     queryKey: ["transition-recommendation-settings"],
     queryFn: () => api.settings.getTransitionRecommendationSettings(),
+    refetchInterval: 30_000,
+  });
+  const { data: dailyReport } = useQuery<DailyReportResponse>({
+    queryKey: ["portfolio-daily-report"],
+    queryFn: () => api.portfolio.dailyReport(),
     refetchInterval: 30_000,
   });
 
@@ -520,7 +600,7 @@ export default function PerformancePanel() {
       </div>
 
       <div className="grid flex-1 grid-rows-[auto_1fr] gap-3 p-3">
-        <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
+        <div className="grid grid-cols-[1fr_0.7fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
           <div className="grid grid-cols-2 gap-3">
             {summaryCards.map((card) => {
               const Icon = card.icon;
@@ -543,6 +623,7 @@ export default function PerformancePanel() {
             })}
           </div>
 
+          {dailyReport ? <DailyOpsSummary report={dailyReport} /> : <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">오늘 운영 요약 로딩 중...</div>}
           <BreakdownList title="시장별 손익" rows={byMarket} keyName="market" />
           <BreakdownList title="청산 사유" rows={byExitReason} keyName="exitReason" />
           <BreakdownList title="Final Score 구간" rows={byFinalScoreBand} keyName="scoreBand" />

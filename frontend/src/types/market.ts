@@ -230,3 +230,40 @@ export interface PerformanceResponse {
   byMarketTransitionQuality: MarketTransitionQualityRow[];
   trades: PerformanceTrade[];
 }
+
+export interface DailyReportPosition {
+  market: string;
+  source: "strategy" | "external";
+  qty: number;
+  avgEntryPrice: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  excluded: boolean;
+  excludedReason: string;
+}
+
+export interface DailyReportSummary {
+  dailyPnl: number;
+  lossStreak: number;
+  closedTrades: number;
+  wins: number;
+  losses: number;
+  netPnl: number;
+  openPositions: number;
+  excludedMarkets: number;
+  riskRejectedCount: number;
+  orderFailedCount: number;
+  excludedOpsCount: number;
+}
+
+export interface DailyReportResponse {
+  date: string;
+  summary: DailyReportSummary;
+  byExitReason: PerformanceBreakdownRow[];
+  positions: DailyReportPosition[];
+  recentAuditCounts: {
+    riskRejected: number;
+    orderFailed: number;
+    excludedOps: number;
+  };
+}
