@@ -1110,6 +1110,9 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
             return cls(2026, 3, 26, 12, 0, tzinfo=tz or timezone.utc)
 
     class _DailyReportDB:
+        def __init__(self):
+            self.runtime_states: dict[str, RuntimeState] = {}
+
         async def execute(self, statement):
             entity = statement.column_descriptions[0]["entity"]
             if entity is portfolio_module.Fill:
@@ -1124,6 +1127,22 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
             if entity is portfolio_module.Position:
                 return _FakeRowsResult([(open_position, "KRW-ETH")])
             raise AssertionError(f"Unexpected entity: {entity}")
+
+        async def get(self, model, key):
+            if model is RuntimeState:
+                return self.runtime_states.get(key)
+            raise AssertionError(f"Unexpected model: {model}")
+
+        def add(self, instance):
+            if isinstance(instance, RuntimeState):
+                self.runtime_states[instance.key] = instance
+                return
+            raise AssertionError(f"Unexpected add: {instance}")
+
+        async def commit(self):
+            return None
+
+    db = _DailyReportDB()
 
     fake_redis = _FakeRedis()
     fake_redis.values["risk:daily_pnl:20260326"] = "1234.5"
@@ -1142,7 +1161,7 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
     monkeypatch.setattr(portfolio_module, "_get_redis", lambda: fake_redis)
     monkeypatch.setattr(portfolio_module, "datetime", _FrozenDateTime)
 
-    response = await portfolio_module.get_daily_report(db=_DailyReportDB())
+    response = await portfolio_module.get_daily_report(db=db)
 
     assert response["date"] == "20260326"
     assert response["summary"]["dailyPnl"] == pytest.approx(1234.5)
@@ -1157,6 +1176,30 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
     assert response["positions"][0]["market"] == "KRW-ETH"
     assert response["positions"][0]["excluded"] is True
     assert response["positions"][0]["excludedReason"] == "장기 hold 과다"
+    assert portfolio_module._daily_report_runtime_state_key("20260326") in db.runtime_states
+
+
+@pytest.mark.asyncio
+async def test_get_daily_report_history_returns_latest_snapshots_first():
+    state_new = RuntimeState(
+        key=portfolio_module._daily_report_runtime_state_key("20260326"),
+        value=json.dumps({"date": "20260326", "summary": {"dailyPnl": 10}}),
+    )
+    state_old = RuntimeState(
+        key=portfolio_module._daily_report_runtime_state_key("20260325"),
+        value=json.dumps({"date": "20260325", "summary": {"dailyPnl": -5}}),
+    )
+
+    class _HistoryDB:
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is RuntimeState:
+                return _FakeRowsResult([state_new, state_old])
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+    response = await portfolio_module.get_daily_report_history(limit=7, db=_HistoryDB())
+
+    assert [row["date"] for row in response] == ["20260326", "20260325"]
 
 
 async def _noop():

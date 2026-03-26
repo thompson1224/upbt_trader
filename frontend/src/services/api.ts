@@ -230,6 +230,14 @@ export const api = {
         .then((r) => r.data as MarketTransitionQualityRow),
     dailyReport: () =>
       apiClient.get("/portfolio/daily-report").then((r) => r.data as DailyReportResponse),
+    dailyReportHistory: (params?: { limit?: number }) =>
+      apiClient
+        .get("/portfolio/daily-report/history", {
+          params: {
+            limit: params?.limit ?? 7,
+          },
+        })
+        .then((r) => r.data as DailyReportResponse[]),
   },
   backtests: {
     create: (payload: object) =>

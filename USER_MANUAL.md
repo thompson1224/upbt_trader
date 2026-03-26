@@ -267,6 +267,11 @@ docker compose top execution
   - 리스크 거절 수
   - 주문 실패 수
   - 가장 약한 열린 포지션 1건
+- 최근 운영 이력
+  - 최근 5일 손익 비교
+  - 열린 포지션 수 비교
+  - 리스크 거절 수 비교
+  - 주문 실패 수 비교
 - 시장별 손익
 - 청산 사유별 손익
 - 기간 필터 `7D / 30D / ALL`
@@ -897,6 +902,7 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 | GET | `/api/v1/portfolio/performance` | 실거래 성과 집계 | `limit`, `days`, `market` |
 | GET | `/api/v1/portfolio/transition-quality/{market}` | 특정 코인의 신호 전환 품질 | `days` |
 | GET | `/api/v1/portfolio/daily-report` | 오늘 운영 요약 | — |
+| GET | `/api/v1/portfolio/daily-report/history` | 최근 일일 운영 리포트 이력 | `limit` |
 | GET | `/api/v1/audit-events` | 감사로그 조회 | `event_type`, `source`, `market`, `limit` |
 | POST | `/api/v1/backtests/runs` | 백테스트 실행 | `market`, `start_dt`, `end_dt`, `initial_capital` |
 | POST | `/api/v1/secrets/upbit-keys` | 업비트 키 저장 | `access_key`, `secret_key` |

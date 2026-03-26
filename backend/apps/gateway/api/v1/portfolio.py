@@ -30,6 +30,7 @@ KST = timezone(timedelta(hours=9))
 HOLD_STALE_MINUTES_REDIS_KEY = "settings:hold_stale_minutes"
 EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
 RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
+DAILY_REPORT_RUNTIME_STATE_PREFIX = "daily.report."
 
 
 class PositionAutoTradeRequest(BaseModel):
@@ -102,6 +103,21 @@ def _parse_excluded_market_state(raw: str | bytes | None) -> dict:
         "markets": [item["market"] for item in normalized_items],
         "items": normalized_items,
     }
+
+
+def _daily_report_runtime_state_key(date_key: str) -> str:
+    return f"{DAILY_REPORT_RUNTIME_STATE_PREFIX}{date_key}"
+
+
+async def _persist_daily_report_snapshot(db: AsyncSession, date_key: str, payload: dict) -> None:
+    key = _daily_report_runtime_state_key(date_key)
+    state = await db.get(RuntimeState, key)
+    serialized = json.dumps(payload)
+    if state is None:
+        db.add(RuntimeState(key=key, value=serialized))
+    else:
+        state.value = serialized
+    await db.commit()
 
 
 def _default_protection_levels(
@@ -1036,7 +1052,7 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
         if redis_client is not None:
             await redis_client.aclose()
 
-    return {
+    payload = {
         "date": date_key,
         "summary": {
             "dailyPnl": daily_pnl_value,
@@ -1078,3 +1094,20 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
             "excludedOps": excluded_ops_count,
         },
     }
+    await _persist_daily_report_snapshot(db, date_key, payload)
+    return payload
+
+
+@router.get("/portfolio/daily-report/history")
+async def get_daily_report_history(
+    limit: int = Query(7, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(RuntimeState)
+        .where(RuntimeState.key.like(f"{DAILY_REPORT_RUNTIME_STATE_PREFIX}%"))
+        .order_by(RuntimeState.key.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [json.loads(row.value) for row in rows]

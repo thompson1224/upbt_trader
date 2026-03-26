@@ -446,6 +446,40 @@ function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
   );
 }
 
+function DailyOpsHistory({ rows }: { rows: DailyReportResponse[] }) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+        최근 운영 이력
+      </div>
+      <div className="space-y-2">
+        {rows.length === 0 ? (
+          <div className="text-xs text-gray-600">저장된 일일 리포트 없음</div>
+        ) : (
+          rows.slice(0, 5).map((row) => (
+            <div key={row.date} className="flex items-center justify-between text-xs">
+              <div>
+                <div className="font-mono text-gray-200">{row.date}</div>
+                <div className="text-gray-600">
+                  열린 {row.summary.openPositions}건 · 리스크 {row.summary.riskRejectedCount}건 · 실패 {row.summary.orderFailedCount}건
+                </div>
+              </div>
+              <div
+                className={cn(
+                  "font-mono font-semibold",
+                  row.summary.dailyPnl >= 0 ? "text-emerald-400" : "text-red-400"
+                )}
+              >
+                {formatCurrency(row.summary.dailyPnl)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PerformancePanel() {
   const [days, setDays] = useState<number | null>(30);
   const [pendingMarket, setPendingMarket] = useState<string | null>(null);
@@ -469,6 +503,11 @@ export default function PerformancePanel() {
     queryKey: ["portfolio-daily-report"],
     queryFn: () => api.portfolio.dailyReport(),
     refetchInterval: 30_000,
+  });
+  const { data: dailyReportHistory = [] } = useQuery<DailyReportResponse[]>({
+    queryKey: ["portfolio-daily-report-history"],
+    queryFn: () => api.portfolio.dailyReportHistory({ limit: 7 }),
+    refetchInterval: 60_000,
   });
 
   if (isLoading) {
@@ -600,7 +639,7 @@ export default function PerformancePanel() {
       </div>
 
       <div className="grid flex-1 grid-rows-[auto_1fr] gap-3 p-3">
-        <div className="grid grid-cols-[1fr_0.7fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
+        <div className="grid grid-cols-[1fr_0.7fr_0.6fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
           <div className="grid grid-cols-2 gap-3">
             {summaryCards.map((card) => {
               const Icon = card.icon;
@@ -624,6 +663,7 @@ export default function PerformancePanel() {
           </div>
 
           {dailyReport ? <DailyOpsSummary report={dailyReport} /> : <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">오늘 운영 요약 로딩 중...</div>}
+          <DailyOpsHistory rows={dailyReportHistory} />
           <BreakdownList title="시장별 손익" rows={byMarket} keyName="market" />
           <BreakdownList title="청산 사유" rows={byExitReason} keyName="exitReason" />
           <BreakdownList title="Final Score 구간" rows={byFinalScoreBand} keyName="scoreBand" />
