@@ -2,7 +2,11 @@ import axios from "axios";
 import { QueryClient } from "@tanstack/react-query";
 import type {
   AuditEvent,
+  BacktestMetrics,
   DailyReportResponse,
+  BacktestRunSummary,
+  BacktestTradeRow,
+  BacktestWindowRow,
   ExcludedMarketItem,
   ExcludedMarketState,
   KstHourBlock,
@@ -67,6 +71,110 @@ export function mapSignalData(signal: RawSignalData) {
     suggestedTakeProfit: signal.suggested_take_profit,
     rejectionReason: signal.rejection_reason,
     displayReason: signal.display_reason,
+  };
+}
+
+function mapBacktestRun(data: {
+  id: number;
+  market: string | null;
+  strategy_id: string;
+  mode: string;
+  status: string;
+  train_from: string;
+  train_to: string;
+  test_from: string;
+  test_to: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+  initial_equity: number | null;
+  stop_loss_pct: number | null;
+  take_profit_pct: number | null;
+  test_window_days: number | null;
+  step_days: number | null;
+}): BacktestRunSummary {
+  return {
+    id: data.id,
+    market: data.market,
+    strategyId: data.strategy_id,
+    mode: data.mode,
+    status: data.status,
+    trainFrom: data.train_from,
+    trainTo: data.train_to,
+    testFrom: data.test_from,
+    testTo: data.test_to,
+    startedAt: data.started_at,
+    finishedAt: data.finished_at,
+    errorMessage: data.error_message,
+    initialEquity: data.initial_equity,
+    stopLossPct: data.stop_loss_pct,
+    takeProfitPct: data.take_profit_pct,
+    testWindowDays: data.test_window_days,
+    stepDays: data.step_days,
+  };
+}
+
+function mapBacktestTrade(data: {
+  id: number;
+  market: string;
+  entry_ts: string;
+  exit_ts: string | null;
+  entry_price: number;
+  exit_price: number | null;
+  qty: number;
+  pnl: number;
+  fee: number;
+  return_pct: number;
+  hold_minutes: number;
+}): BacktestTradeRow {
+  return {
+    id: data.id,
+    market: data.market,
+    entryTs: data.entry_ts,
+    exitTs: data.exit_ts,
+    entryPrice: data.entry_price,
+    exitPrice: data.exit_price,
+    qty: data.qty,
+    pnl: data.pnl,
+    fee: data.fee,
+    returnPct: data.return_pct,
+    holdMinutes: data.hold_minutes,
+  };
+}
+
+function mapBacktestWindow(data: {
+  id: number;
+  window_seq: number;
+  train_from: string;
+  train_to: string;
+  test_from: string;
+  test_to: string;
+  start_equity: number;
+  end_equity: number;
+  net_pnl: number;
+  cagr: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  total_trades: number | null;
+}): BacktestWindowRow {
+  return {
+    id: data.id,
+    windowSeq: data.window_seq,
+    trainFrom: data.train_from,
+    trainTo: data.train_to,
+    testFrom: data.test_from,
+    testTo: data.test_to,
+    startEquity: data.start_equity,
+    endEquity: data.end_equity,
+    netPnl: data.net_pnl,
+    cagr: data.cagr,
+    sharpe: data.sharpe,
+    maxDrawdown: data.max_drawdown,
+    winRate: data.win_rate,
+    profitFactor: data.profit_factor,
+    totalTrades: data.total_trades,
   };
 }
 
@@ -244,9 +352,25 @@ export const api = {
     create: (payload: object) =>
       apiClient.post("/backtests/runs", payload).then((r) => r.data),
     get: (runId: number) =>
-      apiClient.get(`/backtests/runs/${runId}`).then((r) => r.data),
+      apiClient.get(`/backtests/runs/${runId}`).then((r) => mapBacktestRun(r.data)),
+    list: (params?: { limit?: number }) =>
+      apiClient
+        .get("/backtests/runs", {
+          params: {
+            limit: params?.limit ?? 10,
+          },
+        })
+        .then((r) => (r.data as Array<Parameters<typeof mapBacktestRun>[0]>).map(mapBacktestRun)),
     metrics: (runId: number) =>
-      apiClient.get(`/backtests/runs/${runId}/metrics`).then((r) => r.data),
+      apiClient.get(`/backtests/runs/${runId}/metrics`).then((r) => r.data as BacktestMetrics),
+    trades: (runId: number) =>
+      apiClient
+        .get(`/backtests/runs/${runId}/trades`)
+        .then((r) => (r.data as Array<Parameters<typeof mapBacktestTrade>[0]>).map(mapBacktestTrade)),
+    windows: (runId: number) =>
+      apiClient
+        .get(`/backtests/runs/${runId}/windows`)
+        .then((r) => (r.data as Array<Parameters<typeof mapBacktestWindow>[0]>).map(mapBacktestWindow)),
   },
   settings: {
     setUpbitKeys: (accessKey: string, secretKey: string) =>

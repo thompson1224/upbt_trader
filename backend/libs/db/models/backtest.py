@@ -25,6 +25,7 @@ class BacktestRun(Base, TimestampMixin):
 
     trades = relationship("BacktestTrade", back_populates="run")
     metrics = relationship("BacktestMetrics", back_populates="run", uselist=False)
+    windows = relationship("BacktestWindow", back_populates="run")
 
 
 class BacktestTrade(Base):
@@ -64,3 +65,32 @@ class BacktestMetrics(Base):
     turnover: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     run = relationship("BacktestRun", back_populates="metrics")
+
+
+class BacktestWindow(Base):
+    __tablename__ = "backtest_windows"
+    __table_args__ = (
+        Index("ix_backtest_windows_run_seq", "run_id", "window_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id"), nullable=False)
+    window_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    train_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    train_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    test_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    test_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    start_equity: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    end_equity: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    net_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    cagr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sharpe: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_drawdown: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    win_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    profit_factor: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_trades: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    run = relationship("BacktestRun", back_populates="windows")

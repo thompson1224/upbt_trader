@@ -8,7 +8,7 @@ from .signal import Signal
 from .order import Order, Fill
 from .position import Position
 from .runtime_state import RuntimeState
-from .backtest import BacktestRun, BacktestTrade, BacktestMetrics
+from .backtest import BacktestRun, BacktestTrade, BacktestMetrics, BacktestWindow
 
 __all__ = [
     "Base",
@@ -25,4 +25,5 @@ __all__ = [
     "BacktestRun",
     "BacktestTrade",
     "BacktestMetrics",
+    "BacktestWindow",
 ]

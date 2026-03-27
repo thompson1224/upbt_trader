@@ -55,7 +55,7 @@ class BacktestEngine:
     def __init__(self, config: BacktestConfig):
         self.config = config
 
-    def run(self, candles_df: pd.DataFrame) -> BacktestResult:
+    def run(self, candles_df: pd.DataFrame, trade_start_ts: Optional[datetime] = None) -> BacktestResult:
         """
         캔들 데이터로 백테스트 실행.
         candles_df: columns=[ts, open, high, low, close, volume, value]
@@ -84,6 +84,9 @@ class BacktestEngine:
 
             # 지표 계산
             ind = compute_indicators(window)
+
+            if trade_start_ts is not None and ts < trade_start_ts:
+                continue
 
             # 포지션 중 손절/익절 체크
             if position_qty > 0 and current_trade is not None:

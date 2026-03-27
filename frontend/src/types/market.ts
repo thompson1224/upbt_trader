@@ -157,6 +157,58 @@ export interface BacktestMetrics {
   totalTrades: number;
 }
 
+export interface BacktestRunSummary {
+  id: number;
+  market: string | null;
+  strategyId: string;
+  mode: "single" | "walk_forward" | string;
+  status: "pending" | "running" | "completed" | "failed" | string;
+  trainFrom: string;
+  trainTo: string;
+  testFrom: string;
+  testTo: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
+  initialEquity: number | null;
+  stopLossPct: number | null;
+  takeProfitPct: number | null;
+  testWindowDays: number | null;
+  stepDays: number | null;
+}
+
+export interface BacktestTradeRow {
+  id: number;
+  market: string;
+  entryTs: string;
+  exitTs: string | null;
+  entryPrice: number;
+  exitPrice: number | null;
+  qty: number;
+  pnl: number;
+  fee: number;
+  returnPct: number;
+  holdMinutes: number;
+}
+
+export interface BacktestWindowRow {
+  id: number;
+  windowSeq: number;
+  trainFrom: string;
+  trainTo: string;
+  testFrom: string;
+  testTo: string;
+  startEquity: number;
+  endEquity: number;
+  netPnl: number;
+  cagr: number | null;
+  sharpe: number | null;
+  maxDrawdown: number | null;
+  winRate: number | null;
+  profitFactor: number | null;
+  totalTrades: number | null;
+}
+
 export interface PerformanceSummary {
   totalTrades: number;
   winRate: number;

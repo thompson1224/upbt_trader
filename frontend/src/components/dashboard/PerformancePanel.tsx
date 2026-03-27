@@ -7,6 +7,8 @@ import { BarChart3, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
 import type {
+  BacktestMetrics,
+  BacktestRunSummary,
   DailyReportResponse,
   ExcludedMarketItem,
   ExcludedMarketState,
@@ -22,6 +24,12 @@ const RANGE_OPTIONS = [
   { label: "7D", value: 7 },
   { label: "30D", value: 30 },
   { label: "ALL", value: null },
+] as const;
+
+const DAILY_HISTORY_OPTIONS = [
+  { label: "7D", value: 7 },
+  { label: "30D", value: 30 },
+  { label: "90D", value: 90 },
 ] as const;
 
 function formatCurrency(value: number) {
@@ -44,6 +52,11 @@ function formatDate(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatDateKey(value: string) {
+  const [, month = "00", day = "00"] = value.split("-");
+  return `${month}.${day}`;
 }
 
 function formatScore(value: number | null) {
@@ -83,6 +96,77 @@ function getBreakdownLabel(
     return "없음";
   }
   return row[key] ?? "unknown";
+}
+
+function buildSparklineMeta(values: number[], width: number, height: number) {
+  if (values.length === 0) {
+    return {
+      points: [] as Array<{ x: number; y: number; value: number }>,
+      linePath: "",
+      areaPath: "",
+      zeroY: height / 2,
+    };
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const stepX = values.length === 1 ? 0 : width / (values.length - 1);
+  const zeroY =
+    max <= 0 ? 0 : min >= 0 ? height : height - ((0 - min) / range) * height;
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : index * stepX;
+    const y = height - ((value - min) / range) * height;
+    return { x, y, value };
+  });
+  const linePath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+  const areaPath =
+    points.length === 0
+      ? ""
+      : `M ${points[0].x} ${height} ${points
+          .map((point) => `L ${point.x} ${point.y}`)
+          .join(" ")} L ${points[points.length - 1].x} ${height} Z`;
+
+  return {
+    points,
+    linePath,
+    areaPath,
+    zeroY,
+  };
+}
+
+function getDailyHistoryStats(rows: DailyReportResponse[]) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const ordered = [...rows].reverse();
+  const totalPnl = ordered.reduce((sum, row) => sum + row.summary.dailyPnl, 0);
+  const totalRiskRejected = ordered.reduce((sum, row) => sum + row.summary.riskRejectedCount, 0);
+  const totalOrderFailures = ordered.reduce((sum, row) => sum + row.summary.orderFailedCount, 0);
+  const bestDay =
+    ordered.reduce((best, row) => (row.summary.dailyPnl > best.summary.dailyPnl ? row : best), ordered[0]) ?? null;
+  const worstDay =
+    ordered.reduce((worst, row) => (row.summary.dailyPnl < worst.summary.dailyPnl ? row : worst), ordered[0]) ?? null;
+
+  return {
+    ordered,
+    totalPnl,
+    avgPnl: totalPnl / ordered.length,
+    totalRiskRejected,
+    totalOrderFailures,
+    bestDay,
+    worstDay,
+  };
+}
+
+function getMetricDeltaTone(value: number, inverse = false) {
+  if (inverse) {
+    return value <= 0 ? "text-emerald-400" : "text-red-400";
+  }
+  return value >= 0 ? "text-emerald-400" : "text-red-400";
 }
 
 function buildDailyTrendInsights(current: DailyReportResponse, previous: DailyReportResponse) {
@@ -486,6 +570,77 @@ function MarketTransitionQualityList({
   );
 }
 
+function BacktestBaselineCard({
+  run,
+  metrics,
+  actual,
+}: {
+  run: BacktestRunSummary | null;
+  metrics: BacktestMetrics | null;
+  actual: PerformanceResponse["summary"];
+}) {
+  if (!run || !metrics) {
+    return (
+      <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">
+        비교할 완료 백테스트가 아직 없습니다.
+      </div>
+    );
+  }
+
+  const winRateDelta = actual.winRate - metrics.winRate;
+  const profitFactorDelta = actual.profitFactor - metrics.profitFactor;
+  const tradeDelta = actual.totalTrades - metrics.totalTrades;
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          백테스트 기준선
+        </div>
+        <div className="text-[11px] text-gray-600">#{run.id}</div>
+      </div>
+
+      <div className="mb-3 text-xs">
+        <div className="font-mono text-sky-300">{run.market ?? "unknown"}</div>
+        <div className="mt-1 text-gray-500">
+          {run.mode === "walk_forward" ? "walk-forward" : "single"} · {run.testFrom.slice(0, 10)} ~ {run.testTo.slice(0, 10)}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+          <div className="text-gray-500">기준 승률</div>
+          <div className="mt-1 font-mono text-gray-200">{formatPct(metrics.winRate)}</div>
+          <div className={cn("font-mono text-[11px]", getMetricDeltaTone(winRateDelta))}>
+            실거래 {formatDelta(winRateDelta * 100, "%p")}
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+          <div className="text-gray-500">기준 PF</div>
+          <div className="mt-1 font-mono text-gray-200">{metrics.profitFactor.toFixed(2)}</div>
+          <div className={cn("font-mono text-[11px]", getMetricDeltaTone(profitFactorDelta))}>
+            실거래 {formatDelta(profitFactorDelta)}
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+          <div className="text-gray-500">기준 거래수</div>
+          <div className="mt-1 font-mono text-gray-200">{metrics.totalTrades}건</div>
+          <div className={cn("font-mono text-[11px]", getMetricDeltaTone(tradeDelta, true))}>
+            실거래 {formatDelta(tradeDelta, "건")}
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+          <div className="text-gray-500">기준 낙폭</div>
+          <div className="mt-1 font-mono text-gray-200">{formatPct(metrics.maxDrawdown)}</div>
+          <div className="font-mono text-[11px] text-gray-600">
+            CAGR {formatPct(metrics.cagr)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
   const summary = report.summary;
   const weakestMarket = report.analysis.weakMarkets[0];
@@ -589,36 +744,146 @@ function DailyOpsSummary({ report }: { report: DailyReportResponse }) {
   );
 }
 
-function DailyOpsHistory({ rows }: { rows: DailyReportResponse[] }) {
+function DailyOpsHistory({
+  rows,
+  selectedLimit,
+  onSelectLimit,
+}: {
+  rows: DailyReportResponse[];
+  selectedLimit: number;
+  onSelectLimit: (limit: number) => void;
+}) {
+  const stats = getDailyHistoryStats(rows);
+  const ordered = stats?.ordered ?? [];
+  const pnlValues = ordered.map((row) => row.summary.dailyPnl);
+  const sparkline = buildSparklineMeta(pnlValues, 240, 72);
+
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
-      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-        최근 운영 이력
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          운영 리포트 추세
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-1">
+          {DAILY_HISTORY_OPTIONS.map((option) => (
+            <button
+              key={option.label}
+              type="button"
+              onClick={() => onSelectLimit(option.value)}
+              className={cn(
+                "rounded-md px-2 py-1 text-[10px] font-semibold tracking-[0.12em] transition",
+                selectedLimit === option.value
+                  ? "bg-sky-500/20 text-sky-300"
+                  : "text-gray-500 hover:text-gray-200"
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="space-y-2">
-        {rows.length === 0 ? (
-          <div className="text-xs text-gray-600">저장된 일일 리포트 없음</div>
-        ) : (
-          rows.slice(0, 5).map((row) => (
-            <div key={row.date} className="flex items-center justify-between text-xs">
-              <div>
-                <div className="font-mono text-gray-200">{row.date}</div>
-                <div className="text-gray-600">
-                  열린 {row.summary.openPositions}건 · 리스크 {row.summary.riskRejectedCount}건 · 실패 {row.summary.orderFailedCount}건
-                </div>
-              </div>
-              <div
-                className={cn(
-                  "font-mono font-semibold",
-                  row.summary.dailyPnl >= 0 ? "text-emerald-400" : "text-red-400"
-                )}
-              >
-                {formatCurrency(row.summary.dailyPnl)}
+
+      {rows.length === 0 ? (
+        <div className="text-xs text-gray-600">저장된 일일 리포트 없음</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+              <div className="text-gray-500">누적 손익</div>
+              <div className={cn("mt-1 font-mono font-semibold", (stats?.totalPnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400")}>
+                {formatCurrency(stats?.totalPnl ?? 0)}
               </div>
             </div>
-          ))
-        )}
-      </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+              <div className="text-gray-500">평균 일손익</div>
+              <div className={cn("mt-1 font-mono font-semibold", (stats?.avgPnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400")}>
+                {formatCurrency(stats?.avgPnl ?? 0)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+              <div className="text-gray-500">리스크 / 실패 누적</div>
+              <div className="mt-1 font-mono text-gray-200">
+                {stats?.totalRiskRejected ?? 0}건 / {stats?.totalOrderFailures ?? 0}건
+              </div>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+              <div className="text-gray-500">최고 / 최저 일자</div>
+              <div className="mt-1 font-mono text-gray-200">
+                {stats?.bestDay ? formatDateKey(stats.bestDay.date) : "-"} / {stats?.worstDay ? formatDateKey(stats.worstDay.date) : "-"}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+            <div className="mb-2 flex items-center justify-between text-[10px] text-gray-600">
+              <span>
+                {ordered[0] ? formatDateKey(ordered[0].date) : "-"} ~ {ordered[ordered.length - 1] ? formatDateKey(ordered[ordered.length - 1].date) : "-"}
+              </span>
+              <span>관찰 {ordered.length}일</span>
+            </div>
+            <div className="relative h-[88px]">
+              <div
+                className="pointer-events-none absolute inset-x-0 border-t border-dashed border-gray-800"
+                style={{ top: `${sparkline.zeroY}px` }}
+              />
+              <svg viewBox="0 0 240 72" className="h-[72px] w-full overflow-visible">
+                {sparkline.areaPath ? (
+                  <path
+                    d={sparkline.areaPath}
+                    className="fill-sky-500/10"
+                  />
+                ) : null}
+                {sparkline.linePath ? (
+                  <path
+                    d={sparkline.linePath}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-sky-300"
+                  />
+                ) : null}
+                {sparkline.points.map((point) => (
+                  <circle
+                    key={`${point.x}-${point.y}`}
+                    cx={point.x}
+                    cy={point.y}
+                    r="2.5"
+                    className={cn(point.value >= 0 ? "fill-emerald-400" : "fill-red-400")}
+                  />
+                ))}
+              </svg>
+              <div className="mt-2 flex items-center justify-between text-[10px] text-gray-600">
+                <span>{ordered[0] ? formatDateKey(ordered[0].date) : "-"}</span>
+                <span>일손익 추세</span>
+                <span>{ordered[ordered.length - 1] ? formatDateKey(ordered[ordered.length - 1].date) : "-"}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {rows.slice(0, 4).map((row) => (
+              <div key={row.date} className="flex items-center justify-between text-xs">
+                <div>
+                  <div className="font-mono text-gray-200">{row.date}</div>
+                  <div className="text-gray-600">
+                    열린 {row.summary.openPositions}건 · 리스크 {row.summary.riskRejectedCount}건 · 실패 {row.summary.orderFailedCount}건
+                  </div>
+                </div>
+                <div
+                  className={cn(
+                    "font-mono font-semibold",
+                    row.summary.dailyPnl >= 0 ? "text-emerald-400" : "text-red-400"
+                  )}
+                >
+                  {formatCurrency(row.summary.dailyPnl)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -639,7 +904,7 @@ function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
     return (
       <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-          최근 7일 변화
+          직전 운영 변화
         </div>
         <div className="text-xs text-gray-600">
           직전 일일 snapshot이 아직 없어 오늘 기준 변화 비교는 대기 중입니다.
@@ -662,7 +927,7 @@ function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
       <div className="mb-3 flex items-center justify-between">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-          최근 7일 변화
+          직전 운영 변화
         </div>
         <div className="text-[11px] text-gray-600">
           {current.date} vs {previous.date}
@@ -757,6 +1022,7 @@ function DailyOpsChanges({ rows }: { rows: DailyReportResponse[] }) {
 
 export default function PerformancePanel() {
   const [days, setDays] = useState<number | null>(30);
+  const [dailyHistoryLimit, setDailyHistoryLimit] = useState<number>(7);
   const [pendingMarket, setPendingMarket] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<PerformanceResponse>({
@@ -780,8 +1046,26 @@ export default function PerformancePanel() {
     refetchInterval: 30_000,
   });
   const { data: dailyReportHistory = [] } = useQuery<DailyReportResponse[]>({
-    queryKey: ["portfolio-daily-report-history"],
-    queryFn: () => api.portfolio.dailyReportHistory({ limit: 7 }),
+    queryKey: ["portfolio-daily-report-history", dailyHistoryLimit],
+    queryFn: () => api.portfolio.dailyReportHistory({ limit: dailyHistoryLimit }),
+    refetchInterval: 60_000,
+  });
+  const { data: backtestRuns = [] } = useQuery<BacktestRunSummary[]>({
+    queryKey: ["dashboard-backtest-runs"],
+    queryFn: () => api.backtests.list({ limit: 8 }),
+    refetchInterval: 60_000,
+  });
+  const latestCompletedBacktest =
+    backtestRuns.find((run) => run.status === "completed") ?? null;
+  const { data: latestBacktestMetrics } = useQuery<BacktestMetrics | null>({
+    queryKey: ["dashboard-backtest-metrics", latestCompletedBacktest?.id ?? null],
+    queryFn: async () => {
+      if (!latestCompletedBacktest) {
+        return null;
+      }
+      return api.backtests.metrics(latestCompletedBacktest.id);
+    },
+    enabled: latestCompletedBacktest != null,
     refetchInterval: 60_000,
   });
 
@@ -914,7 +1198,7 @@ export default function PerformancePanel() {
       </div>
 
       <div className="grid flex-1 grid-rows-[auto_1fr] gap-3 p-3">
-        <div className="grid grid-cols-[1fr_0.7fr_0.6fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
+        <div className="grid grid-cols-[1fr_0.7fr_0.7fr_0.6fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-3">
           <div className="grid grid-cols-2 gap-3">
             {summaryCards.map((card) => {
               const Icon = card.icon;
@@ -938,7 +1222,16 @@ export default function PerformancePanel() {
           </div>
 
           {dailyReport ? <DailyOpsSummary report={dailyReport} /> : <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-600">오늘 운영 요약 로딩 중...</div>}
-          <DailyOpsHistory rows={dailyReportHistory} />
+          <BacktestBaselineCard
+            run={latestCompletedBacktest}
+            metrics={latestBacktestMetrics ?? null}
+            actual={summary}
+          />
+          <DailyOpsHistory
+            rows={dailyReportHistory}
+            selectedLimit={dailyHistoryLimit}
+            onSelectLimit={setDailyHistoryLimit}
+          />
           <DailyOpsChanges rows={dailyReportHistory} />
           <BreakdownList title="시장별 손익" rows={byMarket} keyName="market" />
           <BreakdownList title="청산 사유" rows={byExitReason} keyName="exitReason" />

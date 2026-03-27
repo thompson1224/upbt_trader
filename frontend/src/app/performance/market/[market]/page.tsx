@@ -11,6 +11,9 @@ import { api } from "@/services/api";
 import { cn } from "@/utils/cn";
 import type {
   AuditEvent,
+  BacktestMetrics,
+  BacktestRunSummary,
+  BacktestWindowRow,
   ExcludedMarketState,
   MarketTransitionQualityRow,
   PerformanceBreakdownRow,
@@ -67,6 +70,12 @@ function formatGapMinutes(currentTs: string, previousTs?: string) {
   const hours = Math.floor(diffMinutes / 60);
   const minutes = diffMinutes % 60;
   return minutes > 0 ? `${hours}시간 ${minutes}분 후` : `${hours}시간 후`;
+}
+
+function formatDelta(value: number, digits = 1, suffix = "") {
+  const rounded = Number(value.toFixed(digits));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded}${suffix}`;
 }
 
 function describeSignalAlignment(position: Position | null, signal: SignalData | null) {
@@ -433,6 +442,120 @@ function MarketInsightCard({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function BacktestComparisonCard({
+  market,
+  run,
+  metrics,
+  windows,
+  summary,
+}: {
+  market: string;
+  run: BacktestRunSummary | null;
+  metrics: BacktestMetrics | null;
+  windows: BacktestWindowRow[];
+  summary: PerformanceResponse["summary"];
+}) {
+  if (!run || !metrics) {
+    return (
+      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          백테스트 비교
+        </div>
+        <div className="text-sm text-gray-600">
+          {market} 기준 최근 완료 백테스트가 아직 없습니다.
+        </div>
+      </div>
+    );
+  }
+
+  const bestWindow = windows.length > 0 ? [...windows].sort((a, b) => b.netPnl - a.netPnl)[0] : null;
+  const worstWindow = windows.length > 0 ? [...windows].sort((a, b) => a.netPnl - b.netPnl)[0] : null;
+  const winRateDelta = summary.winRate - metrics.winRate;
+  const profitFactorDelta = summary.profitFactor - metrics.profitFactor;
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+          백테스트 비교
+        </div>
+        <div className="text-[11px] text-gray-600">
+          #{run.id} · {run.mode === "walk_forward" ? "walk-forward" : "single"}
+        </div>
+      </div>
+
+      <div className="mb-3 text-xs text-gray-500">
+        기준 구간 {run.testFrom.slice(0, 10)} ~ {run.testTo.slice(0, 10)}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
+          <div className="text-gray-500">승률 비교</div>
+          <div className="mt-1 font-mono text-gray-200">
+            {formatPct(metrics.winRate)} → {formatPct(summary.winRate)}
+          </div>
+          <div className={cn("font-mono text-[11px]", winRateDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatDelta(winRateDelta * 100, 1, "%p")}
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
+          <div className="text-gray-500">Profit Factor</div>
+          <div className="mt-1 font-mono text-gray-200">
+            {metrics.profitFactor.toFixed(2)} → {summary.profitFactor.toFixed(2)}
+          </div>
+          <div className={cn("font-mono text-[11px]", profitFactorDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {formatDelta(profitFactorDelta, 2)}
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
+          <div className="text-gray-500">백테스트 낙폭 / 실거래 낙폭</div>
+          <div className="mt-1 font-mono text-gray-200">
+            {formatPct(metrics.maxDrawdown)} / {formatCurrency(-summary.maxDrawdown)}
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            단위가 달라 직접 delta 대신 병기합니다.
+          </div>
+        </div>
+        <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
+          <div className="text-gray-500">거래 수</div>
+          <div className="mt-1 font-mono text-gray-200">
+            {metrics.totalTrades}건 → {summary.totalTrades}건
+          </div>
+          <div className="font-mono text-[11px] text-gray-600">
+            CAGR {formatPct(metrics.cagr)}
+          </div>
+        </div>
+      </div>
+
+      {windows.length > 0 && (
+        <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs">
+          <div className="mb-2 text-gray-500">워크포워드 구간 요약</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-gray-500">최고 구간</div>
+              <div className="font-mono text-emerald-400">
+                {bestWindow ? formatCurrency(bestWindow.netPnl) : "-"}
+              </div>
+              <div className="text-[11px] text-gray-600">
+                {bestWindow ? `W${bestWindow.windowSeq}` : "-"}
+              </div>
+            </div>
+            <div>
+              <div className="text-gray-500">최저 구간</div>
+              <div className="font-mono text-red-400">
+                {worstWindow ? formatCurrency(worstWindow.netPnl) : "-"}
+              </div>
+              <div className="text-[11px] text-gray-600">
+                {worstWindow ? `W${worstWindow.windowSeq}` : "-"}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -892,6 +1015,11 @@ export default function MarketPerformancePage() {
     queryFn: () => api.portfolio.equityCurve({ limit: 300, days: days ?? undefined }),
     refetchInterval: 30_000,
   });
+  const { data: backtestRuns = [] } = useQuery<BacktestRunSummary[]>({
+    queryKey: ["market-backtest-runs", market],
+    queryFn: () => api.backtests.list({ limit: 20 }),
+    refetchInterval: 60_000,
+  });
 
   const summary = data?.summary;
   const trades = data?.trades ?? [];
@@ -901,6 +1029,26 @@ export default function MarketPerformancePage() {
   const equityCurve = equityCurveResponse?.data ?? [];
   const equityLatest = equityCurveResponse?.latest;
   const transitionQualityRow = transitionQuality ?? null;
+  const latestBacktestRun =
+    backtestRuns.find((run) => run.status === "completed" && run.market === market) ?? null;
+  const { data: latestBacktestMetrics } = useQuery<BacktestMetrics | null>({
+    queryKey: ["market-backtest-metrics", latestBacktestRun?.id ?? null],
+    queryFn: async () => {
+      if (!latestBacktestRun) return null;
+      return api.backtests.metrics(latestBacktestRun.id);
+    },
+    enabled: latestBacktestRun != null,
+    refetchInterval: 60_000,
+  });
+  const { data: latestBacktestWindows = [] } = useQuery<BacktestWindowRow[]>({
+    queryKey: ["market-backtest-windows", latestBacktestRun?.id ?? null],
+    queryFn: async () => {
+      if (!latestBacktestRun) return [];
+      return api.backtests.windows(latestBacktestRun.id);
+    },
+    enabled: latestBacktestRun != null,
+    refetchInterval: 60_000,
+  });
   const effectiveRecommendationSettings = recommendationSettings ?? {
     min_hold_origin_count: 3,
     exclude_max_hold_to_sell_rate: 0.2,
@@ -989,6 +1137,13 @@ export default function MarketPerformancePage() {
                     latestSignal={latestSignal}
                     isExcluded={isExcluded}
                     recommendation={recommendation}
+                  />
+                  <BacktestComparisonCard
+                    market={market}
+                    run={latestBacktestRun}
+                    metrics={latestBacktestMetrics ?? null}
+                    windows={latestBacktestWindows}
+                    summary={summary}
                   />
                   <CurrentPositionCard position={currentPosition} />
                   <ExclusionHistoryCard
