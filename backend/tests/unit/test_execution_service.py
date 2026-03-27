@@ -6,6 +6,7 @@ import pytest
 from apps.execution_service import main as execution_module
 from apps.execution_service.main import (
     ExecutionService,
+    _build_closed_trades_for_risk,
     _can_execute_signal,
     _default_protection_levels,
     _extract_exchange_position_rows,
@@ -22,6 +23,7 @@ from apps.execution_service.main import (
     _position_source_from_strategy_managed,
     _resolve_protection_levels,
     _resolve_synced_position_protection_levels,
+    _risk_metrics_from_closed_trades,
     _should_reset_loss_streak,
     _runtime_state_daily_pnl_key,
     _summarize_trades,
@@ -403,6 +405,37 @@ def test_should_reset_loss_streak_only_when_stored_date_differs():
     assert _should_reset_loss_streak("20260324", "20260325") is True
     assert _should_reset_loss_streak("20260325", "20260325") is False
     assert _should_reset_loss_streak(None, "20260325") is False
+
+
+def test_build_closed_trades_for_risk_matches_fifo_lots():
+    ts1 = datetime(2026, 3, 26, 0, 0, tzinfo=timezone.utc)
+    ts2 = datetime(2026, 3, 26, 1, 0, tzinfo=timezone.utc)
+    ts3 = datetime(2026, 3, 26, 2, 0, tzinfo=timezone.utc)
+    trades = _build_closed_trades_for_risk(
+        [
+            {"market": "KRW-BTC", "side": "bid", "price": 100.0, "volume": 2.0, "fee": 0.1, "filledAt": ts1},
+            {"market": "KRW-BTC", "side": "bid", "price": 120.0, "volume": 1.0, "fee": 0.06, "filledAt": ts2},
+            {"market": "KRW-BTC", "side": "ask", "price": 130.0, "volume": 3.0, "fee": 0.195, "filledAt": ts3},
+        ]
+    )
+
+    assert len(trades) == 2
+    assert trades[0]["netPnl"] == pytest.approx(59.77)
+    assert trades[1]["netPnl"] == pytest.approx(9.875)
+
+
+def test_risk_metrics_from_closed_trades_uses_today_trade_sum_and_trailing_losses():
+    daily_pnl, loss_streak = _risk_metrics_from_closed_trades(
+        [
+            {"exitTs": datetime(2026, 3, 26, 0, 0, tzinfo=timezone.utc), "netPnl": -10.0},
+            {"exitTs": datetime(2026, 3, 26, 1, 0, tzinfo=timezone.utc), "netPnl": 5.0},
+            {"exitTs": datetime(2026, 3, 26, 2, 0, tzinfo=timezone.utc), "netPnl": -2.0},
+            {"exitTs": datetime(2026, 3, 26, 3, 0, tzinfo=timezone.utc), "netPnl": -3.0},
+        ]
+    )
+
+    assert daily_pnl == pytest.approx(-10.0)
+    assert loss_streak == 2
 
 
 def test_resolve_market_buy_krw_amount_clamps_to_fee_adjusted_balance():

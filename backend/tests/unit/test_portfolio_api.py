@@ -1170,7 +1170,8 @@ async def test_get_daily_report_includes_risk_audit_positions_and_exclusions(mon
     response = await portfolio_module.get_daily_report(db=db)
 
     assert response["date"] == "20260326"
-    assert response["summary"]["dailyPnl"] == pytest.approx(1234.5)
+    assert response["summary"]["dailyPnl"] == pytest.approx(response["summary"]["netPnl"])
+    assert response["summary"]["runtimeRiskDailyPnl"] == pytest.approx(1234.5)
     assert response["summary"]["lossStreak"] == 2
     assert response["summary"]["closedTrades"] == 1
     assert response["summary"]["openPositions"] == 1
@@ -1210,6 +1211,102 @@ async def test_get_daily_report_history_returns_latest_snapshots_first():
     response = await portfolio_module.get_daily_report_history(limit=7, db=_HistoryDB())
 
     assert [row["date"] for row in response] == ["20260326", "20260325"]
+
+
+@pytest.mark.asyncio
+async def test_get_daily_report_history_backfills_recomputable_fields():
+    buy_fill = SimpleNamespace(
+        id=1,
+        price=100.0,
+        volume=1.0,
+        fee=0.05,
+        filled_at=datetime(2026, 3, 26, 0, 10, tzinfo=timezone.utc),
+    )
+    sell_fill = SimpleNamespace(
+        id=2,
+        price=110.0,
+        volume=1.0,
+        fee=0.055,
+        filled_at=datetime(2026, 3, 26, 1, 10, tzinfo=timezone.utc),
+    )
+    buy_order = SimpleNamespace(side="bid", rejected_reason=None)
+    sell_order = SimpleNamespace(side="ask", rejected_reason="TP triggered: 110 >= 106")
+    buy_signal = SimpleNamespace(
+        id=1,
+        coin_id=1,
+        strategy_id="hybrid_v1",
+        ts=datetime(2026, 3, 26, 0, 0, tzinfo=timezone.utc),
+        ta_score=0.4,
+        sentiment_score=0.3,
+        final_score=0.36,
+        confidence=0.9,
+        side="buy",
+    )
+    risk_event = SimpleNamespace(
+        event_type="risk_rejected",
+        created_at=datetime(2026, 3, 26, 3, 0, tzinfo=timezone.utc),
+        message="risk_rejected KRW-BTC: Max consecutive losses reached: 5",
+        payload_json=json.dumps({"reason": "Max consecutive losses reached: 5"}),
+    )
+    snapshot_state = RuntimeState(
+        key=portfolio_module._daily_report_runtime_state_key("20260326"),
+        value=json.dumps(
+            {
+                "date": "20260326",
+                "summary": {"dailyPnl": 9999.0, "openPositions": 2},
+                "positions": [{"market": "KRW-ETH"}],
+            }
+        ),
+    )
+    risk_daily_state = RuntimeState(key="risk.daily_pnl.20260326", value="1234.5")
+
+    class _HistoryBackfillDB:
+        def __init__(self):
+            self.runtime_states = {
+                snapshot_state.key: snapshot_state,
+                risk_daily_state.key: risk_daily_state,
+            }
+
+        async def execute(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            if entity is RuntimeState:
+                return _FakeRowsResult([snapshot_state])
+            if entity is portfolio_module.Fill:
+                return _FakeRowsResult(
+                    [
+                        (buy_fill, buy_order, "KRW-BTC", buy_signal),
+                        (sell_fill, sell_order, "KRW-BTC", None),
+                    ]
+                )
+            if entity is portfolio_module.AuditEvent:
+                return _FakeRowsResult([risk_event])
+            raise AssertionError(f"Unexpected entity: {entity}")
+
+        async def get(self, model, key):
+            if model is RuntimeState:
+                return self.runtime_states.get(key)
+            raise AssertionError(f"Unexpected model: {model}")
+
+        def add(self, instance):
+            if isinstance(instance, RuntimeState):
+                self.runtime_states[instance.key] = instance
+                return
+            raise AssertionError(f"Unexpected add: {instance}")
+
+        async def commit(self):
+            return None
+
+    db = _HistoryBackfillDB()
+    response = await portfolio_module.get_daily_report_history(limit=7, db=db)
+
+    assert len(response) == 1
+    assert response[0]["summary"]["dailyPnl"] == pytest.approx(response[0]["summary"]["netPnl"])
+    assert response[0]["summary"]["runtimeRiskDailyPnl"] == pytest.approx(response[0]["summary"]["dailyPnl"])
+    assert response[0]["summary"]["openPositions"] == 2
+    assert response[0]["positions"][0]["market"] == "KRW-ETH"
+    assert response[0]["byExitReason"][0]["exitReason"] == "take_profit"
+    assert json.loads(db.runtime_states[snapshot_state.key].value)["summary"]["dailyPnl"] != 9999.0
+    assert float(db.runtime_states[risk_daily_state.key].value) == pytest.approx(response[0]["summary"]["dailyPnl"])
 
 
 async def _noop():

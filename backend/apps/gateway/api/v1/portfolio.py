@@ -74,6 +74,12 @@ def _current_kst_day_start_utc(now: datetime | None = None) -> datetime:
     return day_start_kst.astimezone(timezone.utc)
 
 
+def _kst_date_range_utc(date_key: str) -> tuple[datetime, datetime]:
+    day_start_kst = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=KST)
+    day_end_kst = day_start_kst + timedelta(days=1)
+    return day_start_kst.astimezone(timezone.utc), day_end_kst.astimezone(timezone.utc)
+
+
 def _parse_excluded_market_state(raw: str | bytes | None) -> dict:
     if raw is None:
         return {"markets": [], "items": []}
@@ -146,6 +152,152 @@ async def _persist_daily_report_snapshot(db: AsyncSession, date_key: str, payloa
     else:
         state.value = serialized
     await db.commit()
+
+
+async def _load_runtime_risk_daily_pnl_for_date(db: AsyncSession, date_key: str) -> float:
+    state = await db.get(RuntimeState, f"risk.daily_pnl.{date_key}")
+    if state is None:
+        return 0.0
+    try:
+        return float(state.value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def _persist_runtime_risk_daily_pnl_for_date(
+    db: AsyncSession,
+    *,
+    date_key: str,
+    value: float,
+) -> None:
+    key = f"risk.daily_pnl.{date_key}"
+    state = await db.get(RuntimeState, key)
+    serialized = str(value)
+    if state is None:
+        db.add(RuntimeState(key=key, value=serialized))
+    else:
+        state.value = serialized
+    await db.commit()
+
+
+async def _build_daily_report_analytics(
+    db: AsyncSession,
+    *,
+    start_utc: datetime,
+    end_utc: datetime | None,
+) -> dict:
+    fill_stmt = (
+        select(Fill, Order, Coin.market, Signal)
+        .join(Order, Fill.order_id == Order.id)
+        .join(Coin, Order.coin_id == Coin.id)
+        .outerjoin(Signal, Order.signal_id == Signal.id)
+        .where(Fill.filled_at >= start_utc)
+        .order_by(Fill.filled_at.asc(), Fill.id.asc())
+    )
+    if end_utc is not None:
+        fill_stmt = fill_stmt.where(Fill.filled_at < end_utc)
+    fill_rows_result = await db.execute(fill_stmt)
+    fill_rows = [
+        {
+            "market": market,
+            "side": order.side,
+            "price": fill.price,
+            "volume": fill.volume,
+            "fee": fill.fee,
+            "filledAt": fill.filled_at,
+            "signal": signal,
+            "orderReason": order.rejected_reason,
+            "strategyId": signal.strategy_id if signal else None,
+            "taScore": signal.ta_score if signal else None,
+            "sentimentScore": signal.sentiment_score if signal else None,
+            "finalScore": signal.final_score if signal else None,
+            "confidence": signal.confidence if signal else None,
+        }
+        for fill, order, market, signal in fill_rows_result.all()
+    ]
+    trades = _build_closed_trades(fill_rows)
+
+    audit_stmt = (
+        select(AuditEvent)
+        .where(AuditEvent.created_at >= start_utc)
+        .order_by(AuditEvent.created_at.desc())
+    )
+    if end_utc is not None:
+        audit_stmt = audit_stmt.where(AuditEvent.created_at < end_utc)
+    audit_rows = (await db.execute(audit_stmt)).scalars().all()
+
+    risk_rejected_count = sum(1 for row in audit_rows if row.event_type == "risk_rejected")
+    order_failed_count = sum(1 for row in audit_rows if row.event_type == "order_failed")
+    excluded_ops_count = sum(
+        1
+        for row in audit_rows
+        if row.event_type in {
+            "excluded_market_added",
+            "excluded_market_restored",
+            "excluded_market_reason_updated",
+        }
+    )
+
+    return {
+        "trades": trades,
+        "riskRejectedCount": risk_rejected_count,
+        "orderFailedCount": order_failed_count,
+        "excludedOpsCount": excluded_ops_count,
+        "recentAuditCounts": {
+            "riskRejected": risk_rejected_count,
+            "orderFailed": order_failed_count,
+            "excludedOps": excluded_ops_count,
+        },
+        "byExitReason": _group_performance(trades, "exitReason"),
+        "analysis": {
+            "byFinalScoreBand": _group_score_band_performance(trades),
+            "byHourBlock": _group_hour_block_performance(trades),
+            "weakMarkets": sorted(
+                _group_performance(trades, "market"),
+                key=lambda row: row["netPnl"],
+            )[:3],
+            "riskRejectedReasons": _group_audit_reason_counts(
+                audit_rows,
+                event_type="risk_rejected",
+            )[:5],
+        },
+    }
+
+
+async def _backfill_daily_report_payload(
+    db: AsyncSession,
+    *,
+    date_key: str,
+    payload: dict,
+) -> dict:
+    start_utc, end_utc = _kst_date_range_utc(date_key)
+    analytics = await _build_daily_report_analytics(db, start_utc=start_utc, end_utc=end_utc)
+    trades = analytics["trades"]
+    recomputed_daily_pnl = sum(trade["netPnl"] for trade in trades)
+    await _persist_runtime_risk_daily_pnl_for_date(db, date_key=date_key, value=recomputed_daily_pnl)
+
+    summary = dict(payload.get("summary") or {})
+    summary.update(
+        {
+            "dailyPnl": recomputed_daily_pnl,
+            "runtimeRiskDailyPnl": recomputed_daily_pnl,
+            "closedTrades": len(trades),
+            "wins": sum(1 for trade in trades if trade["netPnl"] > 0),
+            "losses": sum(1 for trade in trades if trade["netPnl"] < 0),
+            "netPnl": recomputed_daily_pnl,
+            "riskRejectedCount": analytics["riskRejectedCount"],
+            "orderFailedCount": analytics["orderFailedCount"],
+            "excludedOpsCount": analytics["excludedOpsCount"],
+        }
+    )
+
+    updated_payload = dict(payload)
+    updated_payload["date"] = date_key
+    updated_payload["summary"] = summary
+    updated_payload["byExitReason"] = analytics["byExitReason"]
+    updated_payload["analysis"] = analytics["analysis"]
+    updated_payload["recentAuditCounts"] = analytics["recentAuditCounts"]
+    return updated_payload
 
 
 def _default_protection_levels(
@@ -1002,53 +1154,8 @@ async def get_market_transition_quality(
 async def get_daily_report(db: AsyncSession = Depends(get_db)):
     start_utc = _current_kst_day_start_utc()
     date_key = _current_kst_date_key()
-
-    fill_stmt = (
-        select(Fill, Order, Coin.market, Signal)
-        .join(Order, Fill.order_id == Order.id)
-        .join(Coin, Order.coin_id == Coin.id)
-        .outerjoin(Signal, Order.signal_id == Signal.id)
-        .where(Fill.filled_at >= start_utc)
-        .order_by(Fill.filled_at.asc(), Fill.id.asc())
-    )
-    fill_rows_result = await db.execute(fill_stmt)
-    fill_rows = [
-        {
-            "market": market,
-            "side": order.side,
-            "price": fill.price,
-            "volume": fill.volume,
-            "fee": fill.fee,
-            "filledAt": fill.filled_at,
-            "signal": signal,
-            "orderReason": order.rejected_reason,
-            "strategyId": signal.strategy_id if signal else None,
-            "taScore": signal.ta_score if signal else None,
-            "sentimentScore": signal.sentiment_score if signal else None,
-            "finalScore": signal.final_score if signal else None,
-            "confidence": signal.confidence if signal else None,
-        }
-        for fill, order, market, signal in fill_rows_result.all()
-    ]
-    trades = _build_closed_trades(fill_rows)
-
-    audit_stmt = (
-        select(AuditEvent)
-        .where(AuditEvent.created_at >= start_utc)
-        .order_by(AuditEvent.created_at.desc())
-    )
-    audit_rows = (await db.execute(audit_stmt)).scalars().all()
-    risk_rejected_count = sum(1 for row in audit_rows if row.event_type == "risk_rejected")
-    order_failed_count = sum(1 for row in audit_rows if row.event_type == "order_failed")
-    excluded_ops_count = sum(
-        1
-        for row in audit_rows
-        if row.event_type in {
-            "excluded_market_added",
-            "excluded_market_restored",
-            "excluded_market_reason_updated",
-        }
-    )
+    analytics = await _build_daily_report_analytics(db, start_utc=start_utc, end_utc=None)
+    trades = analytics["trades"]
 
     position_stmt = (
         select(Position, Coin.market)
@@ -1083,7 +1190,8 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
     payload = {
         "date": date_key,
         "summary": {
-            "dailyPnl": daily_pnl_value,
+            "dailyPnl": sum(trade["netPnl"] for trade in trades),
+            "runtimeRiskDailyPnl": daily_pnl_value,
             "lossStreak": loss_streak,
             "closedTrades": len(trades),
             "wins": sum(1 for trade in trades if trade["netPnl"] > 0),
@@ -1091,23 +1199,12 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
             "netPnl": sum(trade["netPnl"] for trade in trades),
             "openPositions": len(position_rows),
             "excludedMarkets": len(excluded_state["markets"]),
-            "riskRejectedCount": risk_rejected_count,
-            "orderFailedCount": order_failed_count,
-            "excludedOpsCount": excluded_ops_count,
+            "riskRejectedCount": analytics["riskRejectedCount"],
+            "orderFailedCount": analytics["orderFailedCount"],
+            "excludedOpsCount": analytics["excludedOpsCount"],
         },
-        "byExitReason": _group_performance(trades, "exitReason"),
-        "analysis": {
-            "byFinalScoreBand": _group_score_band_performance(trades),
-            "byHourBlock": _group_hour_block_performance(trades),
-            "weakMarkets": sorted(
-                _group_performance(trades, "market"),
-                key=lambda row: row["netPnl"],
-            )[:3],
-            "riskRejectedReasons": _group_audit_reason_counts(
-                audit_rows,
-                event_type="risk_rejected",
-            )[:5],
-        },
+        "byExitReason": analytics["byExitReason"],
+        "analysis": analytics["analysis"],
         "positions": [
             {
                 "market": market,
@@ -1128,11 +1225,7 @@ async def get_daily_report(db: AsyncSession = Depends(get_db)):
             }
             for position, market in position_rows
         ],
-        "recentAuditCounts": {
-            "riskRejected": risk_rejected_count,
-            "orderFailed": order_failed_count,
-            "excludedOps": excluded_ops_count,
-        },
+        "recentAuditCounts": analytics["recentAuditCounts"],
     }
     await _persist_daily_report_snapshot(db, date_key, payload)
     return payload
@@ -1150,4 +1243,15 @@ async def get_daily_report_history(
         .limit(limit)
     )
     rows = (await db.execute(stmt)).scalars().all()
-    return [json.loads(row.value) for row in rows]
+    payloads = []
+    for row in rows:
+        payload = json.loads(row.value)
+        date_key = str(payload.get("date") or row.key.removeprefix(DAILY_REPORT_RUNTIME_STATE_PREFIX))
+        try:
+            payload = await _backfill_daily_report_payload(db, date_key=date_key, payload=payload)
+            if row.value != json.dumps(payload):
+                await _persist_daily_report_snapshot(db, date_key, payload)
+        except Exception:
+            pass
+        payloads.append(payload)
+    return payloads

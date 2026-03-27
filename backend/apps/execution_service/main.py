@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+from collections import defaultdict
 from datetime import datetime, timezone
+from math import isclose
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
@@ -283,6 +285,12 @@ def _runtime_state_daily_pnl_key(now: datetime | None = None) -> str:
     return f"risk.daily_pnl.{ts.strftime('%Y%m%d')}"
 
 
+def _current_kst_day_start_utc(now: datetime | None = None) -> datetime:
+    kst = ZoneInfo("Asia/Seoul")
+    current = now.astimezone(kst) if now else datetime.now(tz=kst)
+    return current.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
 def _risk_metric_date(now: datetime | None = None) -> str:
     kst = ZoneInfo("Asia/Seoul")
     ts = now.astimezone(kst) if now else datetime.now(tz=kst)
@@ -321,6 +329,81 @@ def _summarize_trades(
     avg_price = executed_funds / executed_volume if executed_volume > 0 else 0.0
     total_fee = sum(float(trade.get("funds", 0) or 0) * 0.0005 for trade in trades)
     return executed_volume, executed_funds, avg_price, total_fee
+
+
+def _build_closed_trades_for_risk(fill_rows: list[dict]) -> list[dict]:
+    open_lots: dict[str, list[dict]] = defaultdict(list)
+    trades: list[dict] = []
+
+    for row in fill_rows:
+        market = row["market"]
+        side = row["side"]
+        volume = row["volume"]
+        price = row["price"]
+        fee = row["fee"]
+        filled_at = row["filledAt"]
+
+        if side == "bid":
+            open_lots[market].append(
+                {
+                    "remainingQty": volume,
+                    "remainingFunds": price * volume,
+                    "remainingFee": fee,
+                    "entryTs": filled_at,
+                }
+            )
+            continue
+
+        lots = open_lots.get(market)
+        if not lots or volume <= 0:
+            continue
+
+        remaining_exit_qty = volume
+        while lots and remaining_exit_qty > 1e-9 and not isclose(remaining_exit_qty, 0.0, abs_tol=1e-9):
+            lot = lots[0]
+            lot_qty = lot["remainingQty"]
+            if lot_qty <= 1e-9 or isclose(lot_qty, 0.0, abs_tol=1e-9):
+                lots.pop(0)
+                continue
+
+            matched_qty = min(remaining_exit_qty, lot_qty)
+            matched_ratio = matched_qty / max(lot_qty, 1e-12)
+            entry_funds = lot["remainingFunds"] * matched_ratio
+            entry_fee = lot["remainingFee"] * matched_ratio
+            exit_funds = price * matched_qty
+            exit_fee = fee * (matched_qty / max(volume, 1e-12))
+            gross_pnl = exit_funds - entry_funds
+            net_pnl = gross_pnl - entry_fee - exit_fee
+
+            trades.append(
+                {
+                    "exitTs": filled_at,
+                    "netPnl": net_pnl,
+                }
+            )
+
+            lot["remainingQty"] -= matched_qty
+            lot["remainingFunds"] -= entry_funds
+            lot["remainingFee"] -= entry_fee
+            remaining_exit_qty -= matched_qty
+
+            if lot["remainingQty"] <= 1e-9 or isclose(lot["remainingQty"], 0.0, abs_tol=1e-9):
+                lots.pop(0)
+
+    trades.sort(key=lambda trade: trade["exitTs"])
+    return trades
+
+
+def _risk_metrics_from_closed_trades(trades: list[dict]) -> tuple[float, int]:
+    daily_pnl = sum(float(trade.get("netPnl", 0.0) or 0.0) for trade in trades)
+    loss_streak = 0
+    for trade in reversed(trades):
+        net_pnl = float(trade.get("netPnl", 0.0) or 0.0)
+        if net_pnl < 0:
+            loss_streak += 1
+            continue
+        break
+    return daily_pnl, loss_streak
 
 
 def _parse_trade_filled_at(trade: dict) -> datetime:
@@ -432,24 +515,15 @@ class ExecutionService:
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
     async def _compute_risk_metrics(self) -> tuple[float, int]:
-        """Redis에 누적한 오늘 손익과 연속 손실 횟수를 조회."""
+        """오늘 체결 기준으로 리스크 지표를 재계산하고 Redis/DB에 반영."""
         current_date = _risk_metric_date()
         try:
-            daily_raw, streak_raw, streak_date_raw = await self._redis.mget(
-                self._daily_pnl_redis_key(),
-                RISK_LOSS_STREAK_REDIS_KEY,
-                RISK_LOSS_STREAK_DATE_REDIS_KEY,
-            )
-            daily_pnl = float(daily_raw.decode()) if daily_raw else 0.0
-            loss_streak = int(streak_raw.decode()) if streak_raw else 0
-            streak_date = streak_date_raw.decode() if streak_date_raw else None
-            if daily_raw is None and streak_raw is None and streak_date_raw is None:
-                daily_pnl, loss_streak, streak_date = await self._load_risk_metrics_from_db()
-            if _should_reset_loss_streak(streak_date, current_date):
-                loss_streak = 0
-                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
-                await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
-                await self._persist_risk_metrics_to_db(daily_pnl, loss_streak, current_date)
+            daily_pnl, loss_streak = await self._recalculate_risk_metrics_from_db()
+            await self._redis.set(self._daily_pnl_redis_key(), daily_pnl)
+            await self._redis.expire(self._daily_pnl_redis_key(), 60 * 60 * 48)
+            await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, loss_streak)
+            await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
+            await self._persist_risk_metrics_to_db(daily_pnl, loss_streak, current_date)
             return daily_pnl, loss_streak
         except Exception as e:
             logger.warning("Risk metric read failed: %s", e)
@@ -466,23 +540,9 @@ class ExecutionService:
         return f"risk:daily_pnl:{ts.strftime('%Y%m%d')}"
 
     async def _record_trade_result(self, trade_pnl: float):
-        """실현 손익과 연속 손실 횟수를 Redis에 누적."""
+        """실현 손익 발생 후 DB 기준 리스크 지표를 재동기화."""
         try:
-            daily_key = self._daily_pnl_redis_key()
-            current_date = _risk_metric_date()
-            streak_date_raw = await self._redis.get(RISK_LOSS_STREAK_DATE_REDIS_KEY)
-            streak_date = streak_date_raw.decode() if streak_date_raw else None
-            if _should_reset_loss_streak(streak_date, current_date):
-                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
-            await self._redis.incrbyfloat(daily_key, trade_pnl)
-            await self._redis.expire(daily_key, 60 * 60 * 48)
-            if trade_pnl < 0:
-                await self._redis.incr(RISK_LOSS_STREAK_REDIS_KEY)
-            else:
-                await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, 0)
-            await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, current_date)
-            daily_pnl, loss_streak = await self._compute_risk_metrics()
-            await self._persist_risk_metrics_to_db(daily_pnl, loss_streak, current_date)
+            await self._compute_risk_metrics()
         except Exception as e:
             logger.warning("Risk metric update failed: %s", e)
             daily_pnl, loss_streak, _streak_date = await self._load_risk_metrics_from_db()
@@ -516,6 +576,32 @@ class ExecutionService:
             await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, streak_date or _risk_metric_date())
         except Exception as e:
             logger.warning("Runtime state restore to Redis failed: %s", e)
+
+    async def _recalculate_risk_metrics_from_db(self) -> tuple[float, int]:
+        start_utc = _current_kst_day_start_utc()
+        async with self.session_factory() as db:
+            result = await db.execute(
+                select(Fill, Order, Coin.market)
+                .join(Order, Fill.order_id == Order.id)
+                .join(Coin, Order.coin_id == Coin.id)
+                .where(Fill.filled_at >= start_utc)
+                .order_by(Fill.filled_at.asc(), Fill.id.asc())
+            )
+            rows = result.all()
+
+        fill_rows = [
+            {
+                "market": market,
+                "side": order.side,
+                "price": fill.price,
+                "volume": fill.volume,
+                "fee": fill.fee,
+                "filledAt": fill.filled_at,
+            }
+            for fill, order, market in rows
+        ]
+        trades = _build_closed_trades_for_risk(fill_rows)
+        return _risk_metrics_from_closed_trades(trades)
 
     async def _load_risk_metrics_from_db(self) -> tuple[float, int, str | None]:
         async with self.session_factory() as db:
