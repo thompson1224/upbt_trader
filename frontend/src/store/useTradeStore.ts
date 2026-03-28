@@ -7,14 +7,14 @@ interface TradeState {
   totalEquity: number;
   availableKrw: number;
   dailyPnl: number;
-  isAutoTrading: boolean;
+  isAutoTrading: boolean | null;
 
   setPositions: (positions: Position[]) => void;
   setEquityCurve: (points: EquityCurvePoint[]) => void;
   addEquityPoint: (point: EquityCurvePoint) => void;
   setEquity: (equity: number, available: number) => void;
   setDailyPnl: (pnl: number) => void;
-  setAutoTrading: (enabled: boolean) => void;
+  setAutoTrading: (enabled: boolean | null) => void;
 }
 
 export const useTradeStore = create<TradeState>((set) => ({
@@ -23,7 +23,7 @@ export const useTradeStore = create<TradeState>((set) => ({
   totalEquity: 0,
   availableKrw: 0,
   dailyPnl: 0,
-  isAutoTrading: false,
+  isAutoTrading: null,
 
   setPositions: (positions) => set({ positions }),
   setEquityCurve: (points) => set({ equityCurve: points.slice(-500) }),

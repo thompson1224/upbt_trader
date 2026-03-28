@@ -149,12 +149,12 @@ export interface AuditEvent {
 }
 
 export interface BacktestMetrics {
-  cagr: number;
-  sharpe: number;
-  maxDrawdown: number;
-  winRate: number;
-  profitFactor: number;
-  totalTrades: number;
+  cagr: number | null;
+  sharpe: number | null;
+  maxDrawdown: number | null;
+  winRate: number | null;
+  profitFactor: number | null;
+  totalTrades: number | null;
 }
 
 export interface BacktestRunSummary {

@@ -17,7 +17,10 @@ export default function GlobalHeader() {
   const eth = tickers["KRW-ETH"];
 
   useEffect(() => {
-    api.settings.getAutoTrade().then(({ enabled }) => setAutoTrading(enabled)).catch(() => {});
+    api.settings
+      .getAutoTrade()
+      .then(({ enabled }) => setAutoTrading(enabled))
+      .catch(() => setAutoTrading(null));
   }, [setAutoTrading]);
 
   return (

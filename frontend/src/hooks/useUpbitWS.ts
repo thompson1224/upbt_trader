@@ -6,7 +6,32 @@ import { useNotificationStore, NotificationType } from "@/store/useNotificationS
 import { EquityCurvePoint, TickerData, SignalData } from "@/types/market";
 import { api, mapSignalData } from "@/services/api";
 
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+const DEFAULT_GATEWAY_PORT = process.env.NEXT_PUBLIC_GATEWAY_PORT || "8001";
+const FALLBACK_WS_BASE = process.env.NEXT_PUBLIC_WS_URL || `ws://localhost:${DEFAULT_GATEWAY_PORT}`;
+
+function isLoopbackHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function getWebSocketBaseUrl() {
+  if (typeof window !== "undefined" && !process.env.NEXT_PUBLIC_WS_URL) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}`;
+  }
+
+  const url = new URL(FALLBACK_WS_BASE);
+
+  if (typeof window !== "undefined") {
+    const browserHost = window.location.hostname;
+    const browserProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url.protocol = browserProtocol;
+    if (browserHost && (isLoopbackHost(url.hostname) || !process.env.NEXT_PUBLIC_WS_URL)) {
+      url.hostname = browserHost;
+    }
+  }
+
+  return url.toString().replace(/\/$/, "");
+}
 
 function mapTickerPayload(data: Record<string, unknown>): TickerData {
   return {
@@ -30,13 +55,18 @@ export function useUpbitMarketWS(codes: string[]) {
   const setConnected = useMarketStore((s) => s.setConnected);
 
   useEffect(() => {
+    const wsBaseUrl = getWebSocketBaseUrl();
+    let isActive = true;
+
     function connect() {
+      if (!isActive) return;
       const params = codes.join(",");
-      const url = `${WS_BASE}/ws/market?codes=${encodeURIComponent(params)}`;
+      const url = `${wsBaseUrl}/ws/market?codes=${encodeURIComponent(params)}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!isActive) return;
         setConnected(true);
         const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send("ping");
@@ -55,6 +85,7 @@ export function useUpbitMarketWS(codes: string[]) {
       };
 
       ws.onclose = () => {
+        if (!isActive) return;
         setConnected(false);
         reconnectTimer.current = setTimeout(connect, 3_000);
       };
@@ -66,6 +97,7 @@ export function useUpbitMarketWS(codes: string[]) {
 
     connect();
     return () => {
+      isActive = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
@@ -74,10 +106,14 @@ export function useUpbitMarketWS(codes: string[]) {
 
 export function useSignalWS() {
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addSignal = useMarketStore((s) => s.addSignal);
   const setSignals = useMarketStore((s) => s.setSignals);
 
   useEffect(() => {
+    const wsBaseUrl = getWebSocketBaseUrl();
+    let isActive = true;
+
     // 초기 신호 로드: 최근 신호 50개 (hold 포함)
     const loadInitialSignals = async () => {
       try {
@@ -92,19 +128,37 @@ export function useSignalWS() {
     };
     loadInitialSignals();
 
-    const ws = new WebSocket(`${WS_BASE}/ws/signals`);
-    wsRef.current = ws;
+    const connect = () => {
+      if (!isActive) return;
+      const ws = new WebSocket(`${wsBaseUrl}/ws/signals`);
+      wsRef.current = ws;
 
-    ws.onmessage = (e) => {
-      try {
-        const signal = mapSignalData(JSON.parse(e.data));
-        addSignal(signal);
-      } catch {
-        // 무시
-      }
+      ws.onmessage = (e) => {
+        try {
+          const signal = mapSignalData(JSON.parse(e.data));
+          addSignal(signal);
+        } catch {
+          // 무시
+        }
+      };
+
+      ws.onclose = () => {
+        if (!isActive) return;
+        reconnectTimer.current = setTimeout(connect, 3_000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
     };
 
-    return () => ws.close();
+    connect();
+
+    return () => {
+      isActive = false;
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      wsRef.current?.close();
+    };
   }, [addSignal, setSignals]);
 }
 
@@ -120,11 +174,14 @@ export function useTradeEventWS() {
   const push = useNotificationStore((s) => s.push);
 
   useEffect(() => {
+    const wsBaseUrl = getWebSocketBaseUrl();
+    let isActive = true;
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
     const connect = () => {
-      ws = new WebSocket(`${WS_BASE}/ws/trade-events`);
+      if (!isActive) return;
+      ws = new WebSocket(`${wsBaseUrl}/ws/trade-events`);
 
       ws.onmessage = (e) => {
         try {
@@ -144,6 +201,7 @@ export function useTradeEventWS() {
       };
 
       ws.onclose = () => {
+        if (!isActive) return;
         reconnectTimer = setTimeout(connect, 3_000);
       };
       ws.onerror = () => ws.close();
@@ -151,6 +209,7 @@ export function useTradeEventWS() {
 
     connect();
     return () => {
+      isActive = false;
       clearTimeout(reconnectTimer);
       ws?.close();
     };
@@ -164,6 +223,8 @@ export function usePortfolioWS() {
   const setDailyPnl = useTradeStore((s) => s.setDailyPnl);
 
   useEffect(() => {
+    const wsBaseUrl = getWebSocketBaseUrl();
+    let isActive = true;
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
@@ -185,7 +246,8 @@ export function usePortfolioWS() {
     };
 
     const connect = () => {
-      ws = new WebSocket(`${WS_BASE}/ws/portfolio`);
+      if (!isActive) return;
+      ws = new WebSocket(`${wsBaseUrl}/ws/portfolio`);
 
       ws.onmessage = (e) => {
         try {
@@ -208,6 +270,7 @@ export function usePortfolioWS() {
       };
 
       ws.onclose = () => {
+        if (!isActive) return;
         reconnectTimer = setTimeout(connect, 3_000);
       };
       ws.onerror = () => ws.close();
@@ -217,6 +280,7 @@ export function usePortfolioWS() {
     connect();
 
     return () => {
+      isActive = false;
       clearTimeout(reconnectTimer);
       ws?.close();
     };

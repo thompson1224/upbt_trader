@@ -10,6 +10,7 @@ export default function AutoTradeToggle() {
   const setAutoTrading = useTradeStore((s) => s.setAutoTrading);
   const [showConfirm, setShowConfirm] = useState(false);
   const [pending, setPending] = useState(false);
+  const isStatusPending = isAutoTrading == null;
 
   const commit = async (enabled: boolean) => {
     setPending(true);
@@ -25,6 +26,8 @@ export default function AutoTradeToggle() {
   };
 
   const handleClick = () => {
+    if (isStatusPending) return;
+
     if (isAutoTrading) {
       commit(false);
     } else {
@@ -36,16 +39,18 @@ export default function AutoTradeToggle() {
     <>
       <button
         onClick={handleClick}
-        disabled={pending}
+        disabled={pending || isStatusPending}
         className={cn(
           "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50",
-          isAutoTrading
+          isStatusPending
+            ? "bg-amber-500/10 text-amber-300 border-amber-500/20"
+            : isAutoTrading
             ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
             : "bg-gray-800 text-gray-400 border-gray-700"
         )}
       >
         <Power className="w-3.5 h-3.5" />
-        {isAutoTrading ? "자동매매 ON" : "자동매매 OFF"}
+        {isStatusPending ? "자동매매 확인 중" : isAutoTrading ? "자동매매 ON" : "자동매매 OFF"}
       </button>
 
       {showConfirm && (

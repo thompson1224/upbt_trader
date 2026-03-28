@@ -66,6 +66,20 @@ function formatPct(value: number | null) {
   return `${(value * 100).toFixed(2)}%`;
 }
 
+function formatDecimal(value: number | null, digits = 2) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
+  return value.toFixed(digits);
+}
+
+function formatCount(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${value}건`;
+}
+
 function formatPrice(value: number | null) {
   if (value == null || Number.isNaN(value)) {
     return "-";
@@ -1000,11 +1014,11 @@ export default function BacktestPage() {
                 <>
                   <div className="grid gap-4 md:grid-cols-3">
                     <MetricCard label="CAGR" value={formatPct(metrics.cagr)} />
-                    <MetricCard label="Sharpe" value={metrics.sharpe.toFixed(2)} />
+                    <MetricCard label="Sharpe" value={formatDecimal(metrics.sharpe)} />
                     <MetricCard label="최대 낙폭" value={formatPct(metrics.maxDrawdown)} negative />
                     <MetricCard label="승률" value={formatPct(metrics.winRate)} />
-                    <MetricCard label="손익비" value={metrics.profitFactor.toFixed(2)} />
-                    <MetricCard label="총 거래" value={`${metrics.totalTrades}건`} />
+                    <MetricCard label="손익비" value={formatDecimal(metrics.profitFactor)} />
+                    <MetricCard label="총 거래" value={formatCount(metrics.totalTrades)} />
                   </div>
 
                   {windows.length > 0 ? <WindowOverviewChart windows={windows} /> : null}

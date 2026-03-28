@@ -1,6 +1,6 @@
 # Upbit AI Trader 남은 체크리스트
 
-최종 업데이트: 2026-03-25
+최종 업데이트: 2026-03-28
 
 ## 현재 상태
 
@@ -69,16 +69,21 @@
 
 ## 바로 쓸 명령
 
+주의:
+
+- 프런트의 `자동매매 확인 중` 표시는 게이트웨이 상태를 아직 읽지 못했다는 뜻입니다.
+- 조회 실패 시에도 UI가 즉시 `OFF`로 바뀌지 않으므로, 최종 상태 판단은 아래 API 응답으로 확인하는 편이 맞습니다.
+
 자동매매 상태 확인:
 
 ```bash
-curl -sS http://localhost:8000/api/v1/settings/auto-trade
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade"
 ```
 
 자동매매 ON:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}'
 ```
@@ -86,7 +91,7 @@ curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
 자동매매 OFF:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": false}'
 ```
@@ -94,7 +99,7 @@ curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
 감사 로그 확인:
 
 ```bash
-curl -sS 'http://localhost:8000/api/v1/audit-events?limit=20'
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/audit-events?limit=20"
 ```
 
 ## 참고 문서
@@ -102,4 +107,5 @@ curl -sS 'http://localhost:8000/api/v1/audit-events?limit=20'
 - [OPERATIONS_RUNBOOK.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/OPERATIONS_RUNBOOK.md)
 - [OPERATIONS_APPROVAL_2026-03-25.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/OPERATIONS_APPROVAL_2026-03-25.md)
 - [WORKLOG_2026-03-24.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/WORKLOG_2026-03-24.md)
+- [WORKLOG_2026-03-28.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/WORKLOG_2026-03-28.md)
 - [USER_MANUAL.md](/Users/ljmac/CC%20Projects/upbit-ai-trader/USER_MANUAL.md)

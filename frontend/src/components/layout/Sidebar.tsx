@@ -4,7 +4,6 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   BarChart2,
-  BrainCircuit,
   TrendingUp,
   Settings,
   Activity,
@@ -20,13 +19,13 @@ const NAV_ITEMS = [
   { href: "/orders", icon: ClipboardList, label: "주문내역" },
   { href: "/audit", icon: ShieldCheck, label: "감사로그" },
   { href: "/backtest", icon: BarChart2, label: "백테스팅" },
-  { href: "/ai-analysis", icon: BrainCircuit, label: "AI 분석" },
   { href: "/settings", icon: Settings, label: "설정" },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const isConnected = useMarketStore((s) => s.isConnected);
+  const isConnectionPending = isConnected == null;
 
   return (
     <aside className="w-16 md:w-56 bg-gray-900 border-r border-gray-800 flex flex-col h-full shrink-0">
@@ -63,11 +62,15 @@ export default function Sidebar() {
           <span
             className={cn(
               "w-2 h-2 rounded-full",
-              isConnected ? "bg-emerald-400 animate-pulse" : "bg-red-500"
+              isConnectionPending
+                ? "bg-amber-400"
+                : isConnected
+                  ? "bg-emerald-400 animate-pulse"
+                  : "bg-red-500"
             )}
           />
           <span className="hidden md:block text-xs text-gray-500">
-            {isConnected ? "실시간 연결됨" : "연결 끊김"}
+            {isConnectionPending ? "연결 확인 중" : isConnected ? "실시간 연결됨" : "연결 끊김"}
           </span>
         </div>
       </div>

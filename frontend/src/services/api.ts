@@ -17,10 +17,32 @@ import type {
   TransitionRecommendationSettings,
 } from "@/types/market";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const DEFAULT_GATEWAY_PORT = process.env.NEXT_PUBLIC_GATEWAY_PORT || "8001";
+const FALLBACK_API_BASE = process.env.NEXT_PUBLIC_API_URL || `http://localhost:${DEFAULT_GATEWAY_PORT}`;
+
+function isLoopbackHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+export function getApiBaseUrl() {
+  if (typeof window !== "undefined" && !process.env.NEXT_PUBLIC_API_URL) {
+    return `${window.location.origin}`.replace(/\/$/, "");
+  }
+
+  const url = new URL(FALLBACK_API_BASE);
+
+  if (typeof window !== "undefined") {
+    const browserHost = window.location.hostname;
+    if (browserHost && (isLoopbackHost(url.hostname) || !process.env.NEXT_PUBLIC_API_URL)) {
+      url.hostname = browserHost;
+    }
+  }
+
+  return url.toString().replace(/\/$/, "");
+}
 
 export const apiClient = axios.create({
-  baseURL: `${API_BASE}/api/v1`,
+  baseURL: `${getApiBaseUrl()}/api/v1`,
   timeout: 10_000,
   headers: { "Content-Type": "application/json" },
 });

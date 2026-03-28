@@ -16,73 +16,88 @@ export default function TradingViewChart() {
   const selectedMarket = useMarketStore((s) => s.selectedMarket);
   const tickers = useMarketStore((s) => s.tickers);
   const [timeframe, setTimeframe] = useState("1m");
+  const [isChartReady, setIsChartReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // 차트 초기화
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     let chart: IChartApi;
+    let isMounted = true;
+    let removeResizeObserver: (() => void) | undefined;
 
-    import("lightweight-charts").then(({ createChart, CandlestickSeries, ColorType }) => {
-      if (!chartContainerRef.current) return;
+    import("lightweight-charts")
+      .then(({ createChart, CandlestickSeries, ColorType }) => {
+        if (!chartContainerRef.current || !isMounted) return;
 
-      chart = createChart(chartContainerRef.current, {
-        layout: {
-          background: { type: ColorType.Solid, color: "#111827" },
-          textColor: "#9ca3af",
-        },
-        grid: {
-          vertLines: { color: "#1f2937" },
-          horzLines: { color: "#1f2937" },
-        },
-        crosshair: { mode: 1 },
-        rightPriceScale: { borderColor: "#374151" },
-        timeScale: {
-          borderColor: "#374151",
-          timeVisible: true,
-        },
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight,
+        chart = createChart(chartContainerRef.current, {
+          layout: {
+            background: { type: ColorType.Solid, color: "#111827" },
+            textColor: "#9ca3af",
+          },
+          grid: {
+            vertLines: { color: "#1f2937" },
+            horzLines: { color: "#1f2937" },
+          },
+          crosshair: { mode: 1 },
+          rightPriceScale: { borderColor: "#374151" },
+          timeScale: {
+            borderColor: "#374151",
+            timeVisible: true,
+          },
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
+        });
+
+        const candleSeries = chart.addSeries(CandlestickSeries, {
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderVisible: false,
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+        });
+
+        chartRef.current = chart;
+        candleSeriesRef.current = candleSeries;
+        setIsChartReady(true);
+        setLoadError(null);
+
+        // 리사이즈 대응
+        const resizeObserver = new ResizeObserver(() => {
+          if (chartContainerRef.current) {
+            chart.applyOptions({
+              width: chartContainerRef.current.clientWidth,
+              height: chartContainerRef.current.clientHeight,
+            });
+          }
+        });
+        resizeObserver.observe(chartContainerRef.current);
+        removeResizeObserver = () => resizeObserver.disconnect();
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!isMounted) return;
+        setLoadError("차트 엔진을 불러오지 못했습니다.");
       });
-
-      const candleSeries = chart.addSeries(CandlestickSeries, {
-        upColor: "#10b981",
-        downColor: "#ef4444",
-        borderVisible: false,
-        wickUpColor: "#10b981",
-        wickDownColor: "#ef4444",
-      });
-
-      chartRef.current = chart;
-      candleSeriesRef.current = candleSeries;
-
-      // 리사이즈 대응
-      const resizeObserver = new ResizeObserver(() => {
-        if (chartContainerRef.current) {
-          chart.applyOptions({
-            width: chartContainerRef.current.clientWidth,
-            height: chartContainerRef.current.clientHeight,
-          });
-        }
-      });
-      resizeObserver.observe(chartContainerRef.current);
-
-      return () => resizeObserver.disconnect();
-    });
 
     return () => {
+      isMounted = false;
+      removeResizeObserver?.();
       chart?.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      setIsChartReady(false);
     };
   }, []);
 
   // 캔들 데이터 로드
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
+    if (!isChartReady || !candleSeriesRef.current) return;
 
     setIsLoading(true);
+    setLoadError(null);
     api.markets
       .candles(selectedMarket, timeframe, 200)
       .then((candles: CandleData[]) => {
@@ -96,9 +111,12 @@ export default function TradingViewChart() {
         }));
         candleSeriesRef.current.setData(data);
       })
-      .catch(console.error)
+      .catch((error) => {
+        console.error(error);
+        setLoadError("캔들 데이터를 불러오지 못했습니다.");
+      })
       .finally(() => setIsLoading(false));
-  }, [selectedMarket, timeframe]);
+  }, [isChartReady, selectedMarket, timeframe]);
 
   // 실시간 가격 업데이트
   useEffect(() => {
@@ -141,6 +159,11 @@ export default function TradingViewChart() {
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/50 z-10">
             <div className="text-sm text-gray-500">로딩 중...</div>
+          </div>
+        )}
+        {loadError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 z-20 px-4 text-center">
+            <div className="text-sm text-red-300">{loadError}</div>
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full" />

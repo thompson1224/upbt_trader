@@ -35,7 +35,10 @@ function formatCurrency(value: number) {
   return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString("ko-KR")}원`;
 }
 
-function formatPct(value: number) {
+function formatPct(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
   return `${(value * 100).toFixed(1)}%`;
 }
 
@@ -53,6 +56,13 @@ function formatScore(value: number | null) {
     return "-";
   }
   return value.toFixed(2);
+}
+
+function formatCount(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${value}건`;
 }
 
 function formatGapMinutes(currentTs: string, previousTs?: string) {
@@ -76,6 +86,13 @@ function formatDelta(value: number, digits = 1, suffix = "") {
   const rounded = Number(value.toFixed(digits));
   const sign = rounded > 0 ? "+" : "";
   return `${sign}${rounded}${suffix}`;
+}
+
+function getDelta(base: number | null, current: number | null) {
+  if (base == null || current == null || Number.isNaN(base) || Number.isNaN(current)) {
+    return null;
+  }
+  return current - base;
 }
 
 function describeSignalAlignment(position: Position | null, signal: SignalData | null) {
@@ -474,8 +491,8 @@ function BacktestComparisonCard({
 
   const bestWindow = windows.length > 0 ? [...windows].sort((a, b) => b.netPnl - a.netPnl)[0] : null;
   const worstWindow = windows.length > 0 ? [...windows].sort((a, b) => a.netPnl - b.netPnl)[0] : null;
-  const winRateDelta = summary.winRate - metrics.winRate;
-  const profitFactorDelta = summary.profitFactor - metrics.profitFactor;
+  const winRateDelta = getDelta(metrics.winRate, summary.winRate);
+  const profitFactorDelta = getDelta(metrics.profitFactor, summary.profitFactor);
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
@@ -498,17 +515,17 @@ function BacktestComparisonCard({
           <div className="mt-1 font-mono text-gray-200">
             {formatPct(metrics.winRate)} → {formatPct(summary.winRate)}
           </div>
-          <div className={cn("font-mono text-[11px]", winRateDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
-            {formatDelta(winRateDelta * 100, 1, "%p")}
+          <div className={cn("font-mono text-[11px]", winRateDelta == null ? "text-gray-600" : winRateDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {winRateDelta == null ? "-" : formatDelta(winRateDelta * 100, 1, "%p")}
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
           <div className="text-gray-500">Profit Factor</div>
           <div className="mt-1 font-mono text-gray-200">
-            {metrics.profitFactor.toFixed(2)} → {summary.profitFactor.toFixed(2)}
+            {formatScore(metrics.profitFactor)} → {formatScore(summary.profitFactor)}
           </div>
-          <div className={cn("font-mono text-[11px]", profitFactorDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
-            {formatDelta(profitFactorDelta, 2)}
+          <div className={cn("font-mono text-[11px]", profitFactorDelta == null ? "text-gray-600" : profitFactorDelta >= 0 ? "text-emerald-400" : "text-red-400")}>
+            {profitFactorDelta == null ? "-" : formatDelta(profitFactorDelta, 2)}
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
@@ -523,7 +540,7 @@ function BacktestComparisonCard({
         <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3">
           <div className="text-gray-500">거래 수</div>
           <div className="mt-1 font-mono text-gray-200">
-            {metrics.totalTrades}건 → {summary.totalTrades}건
+            {formatCount(metrics.totalTrades)} → {formatCount(summary.totalTrades)}
           </div>
           <div className="font-mono text-[11px] text-gray-600">
             CAGR {formatPct(metrics.cagr)}
@@ -804,14 +821,16 @@ function EquityCurveRangeCard({
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const areaSeriesRef = useRef<ISeriesApi | null>(null);
+  const [isChartReady, setIsChartReady] = useState(false);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     let removeResizeObserver: (() => void) | undefined;
+    let isMounted = true;
 
     import("lightweight-charts").then(({ createChart, AreaSeries, ColorType }) => {
-      if (!chartContainerRef.current) return;
+      if (!chartContainerRef.current || !isMounted) return;
 
       const chart = createChart(chartContainerRef.current, {
         layout: {
@@ -844,6 +863,7 @@ function EquityCurveRangeCard({
 
       chartRef.current = chart;
       areaSeriesRef.current = series;
+      setIsChartReady(true);
 
       const resizeObserver = new ResizeObserver(() => {
         if (!chartContainerRef.current) return;
@@ -857,15 +877,17 @@ function EquityCurveRangeCard({
     });
 
     return () => {
+      isMounted = false;
       removeResizeObserver?.();
       chartRef.current?.remove();
       chartRef.current = null;
       areaSeriesRef.current = null;
+      setIsChartReady(false);
     };
   }, []);
 
   useEffect(() => {
-    if (!areaSeriesRef.current) return;
+    if (!isChartReady || !areaSeriesRef.current) return;
     areaSeriesRef.current.setData(
       points.map((point) => ({
         time: (new Date(point.ts).getTime() / 1000) as import("lightweight-charts").Time,
@@ -873,7 +895,7 @@ function EquityCurveRangeCard({
       }))
     );
     chartRef.current?.timeScale().fitContent();
-  }, [points]);
+  }, [isChartReady, points]);
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
@@ -888,13 +910,14 @@ function EquityCurveRangeCard({
       <div className="mb-3 text-xs text-gray-600">
         이 곡선은 {`"${market}"`} 단일 코인 성과가 아니라, 선택 기간의 전체 포트폴리오 자산 흐름입니다.
       </div>
-      {points.length === 0 ? (
-        <div className="flex h-[220px] items-center justify-center text-sm text-gray-600">
+      <div className="relative h-[220px] w-full">
+        <div ref={chartContainerRef} className="h-full w-full" />
+        {points.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-600">
           곡선 데이터 없음
-        </div>
-      ) : (
-        <div ref={chartContainerRef} className="h-[220px] w-full" />
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1124,7 +1147,7 @@ export default function MarketPerformancePage() {
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <SummaryCard label="순손익" value={formatCurrency(summary.netPnl)} positive={summary.netPnl >= 0} icon={summary.netPnl >= 0 ? TrendingUp : TrendingDown} />
                 <SummaryCard label="승률" value={formatPct(summary.winRate)} positive={summary.winRate >= 0.5} icon={BarChart3} />
-                <SummaryCard label="Profit Factor" value={Number.isFinite(summary.profitFactor) ? summary.profitFactor.toFixed(2) : "∞"} positive={summary.profitFactor >= 1} icon={BarChart3} />
+                <SummaryCard label="Profit Factor" value={Number.isFinite(summary.profitFactor) ? formatScore(summary.profitFactor) : "∞"} positive={summary.profitFactor >= 1} icon={BarChart3} />
                 <SummaryCard label="최대 낙폭" value={formatCurrency(-summary.maxDrawdown)} positive={false} icon={ShieldAlert} />
               </div>
 

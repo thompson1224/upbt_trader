@@ -1,7 +1,7 @@
 # Upbit AI Trader — 사용자 매뉴얼
 
 > 업비트 기반 AI 자동매매 웹앱 · Docker 실행 가이드
-> 버전: v0.2.2 (2026-03-25)
+> 버전: v0.2.3 (2026-03-28)
 
 ---
 
@@ -114,8 +114,12 @@ upbit-ai-trader-frontend-1      Up
 | URL | 설명 |
 |-----|------|
 | **http://localhost:3000** | 🌐 웹 앱 메인 (여기서 시작) |
-| http://localhost:8000/docs | API 문서 (Swagger UI) |
-| http://localhost:8000/health | 게이트웨이 상태 확인 |
+| http://localhost:8001/docs | API 문서 (Swagger UI, `docker compose` 기본값) |
+| http://localhost:8001/health | 게이트웨이 상태 확인 (`docker compose` 기본값) |
+
+> 로컬 백엔드를 `backend/scripts/run_local.sh`로 직접 띄우는 경우 게이트웨이는 `http://localhost:8000`을 사용합니다.
+> `docker compose`에서 `GATEWAY_HOST_PORT`, `FRONTEND_HOST_PORT`를 바꾸면 같은 값으로 접속하면 됩니다.
+> 브라우저에서 다른 호스트/IP로 접속한 경우 프런트는 현재 브라우저 호스트를 기준으로 API/WebSocket 주소를 자동 추적합니다.
 
 ---
 
@@ -191,9 +195,13 @@ docker compose restart market_data      # 시세 데이터가 업데이트되지
 반복 운영 절차는 별도 문서:
 
 ```bash
+./scripts/verify_all.sh
 cat OPERATIONS_RUNBOOK.md
 ./scripts/ops_smoke_check.sh
 ```
+
+- `./scripts/verify_all.sh`: 프런트 lint/build, 백엔드 unit test, compose 스모크체크를 순서대로 실행합니다.
+- `./scripts/ops_smoke_check.sh`: 이미 기동 중인 compose 스택만 빠르게 확인합니다.
 
 ### 로그 확인
 
@@ -303,6 +311,14 @@ docker compose top execution
 
 시장별 손익 또는 종료 거래의 시장명을 누르면 코인별 상세 성과 페이지로 이동합니다.
 
+상태 표시 규칙:
+
+- 좌하단 상태가 `연결 확인 중`이면 초기 WebSocket 연결을 시도하는 중입니다.
+- 헤더 토글이 `자동매매 확인 중`이면 게이트웨이에서 현재 스위치 상태를 읽는 중입니다.
+- 연결이 끊겨도 WebSocket은 자동 재연결되며, 차트/신호/포트폴리오 구독은 백그라운드에서 다시 붙습니다.
+- 자동매매 상태를 읽지 못하면 UI는 `OFF`로 단정하지 않고 `자동매매 확인 중` 상태를 유지합니다.
+- 차트 엔진 또는 캔들 데이터 로드 실패 시 빈 패널 대신 오류 메시지를 표시합니다.
+
 ---
 
 ### 5-4. 코인별 상세 성과 페이지 (`/performance/market/{market}`)
@@ -356,6 +372,7 @@ http://localhost:3000/performance/market/KRW-BTC
 
 즉 이 화면은 `과거 성과`, `현재 포지션`, `최근 신호`를 같이 보는 분석용 페이지입니다.
 대시보드의 성과 패널은 여기에 더해 `점수 구간`과 `시간대` 기준으로 손익을 빠르게 훑는 요약 분석 화면입니다.
+백테스트 기준선이나 실거래 비교 지표가 아직 계산되지 않은 경우 값은 `-`로 표시합니다.
 
 ---
 
@@ -840,6 +857,23 @@ docker compose logs strategy | grep "Groq"
 
 ---
 
+### 🟡 대시보드에 `연결 확인 중`이 오래 유지됨
+
+점검:
+
+```bash
+curl -sS http://localhost:8001/health
+curl -sS http://localhost:8001/api/v1/settings/auto-trade
+```
+
+정상이면 브라우저 새로고침 후 5~10초 정도 대기합니다.
+
+- 프런트는 현재 접속한 브라우저 호스트 기준으로 API/WebSocket 주소를 자동 사용합니다.
+- 게이트웨이가 내려가 있거나 방화벽/프록시가 WebSocket을 막으면 `연결 확인 중` 또는 `연결 끊김`이 길게 보일 수 있습니다.
+- `docker compose` 기본 포트는 `3000` / `8001`입니다.
+
+---
+
 ### 🟡 설정 저장 500 에러
 
 게이트웨이 로그에서 `ENCRYPTION_KEY` 오류 확인:
@@ -883,7 +917,7 @@ docker compose restart gateway
 
 ```bash
 lsof -i :3000    # 프론트엔드 포트 확인
-lsof -i :8000    # 게이트웨이 포트 확인
+lsof -i :8001    # 게이트웨이 포트 확인 (docker compose 기본값)
 lsof -i :5432    # PostgreSQL 포트 확인
 lsof -i :6379    # Redis 포트 확인
 ```
@@ -920,7 +954,10 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 
 ## 10. API 레퍼런스
 
-전체 엔드포인트: **http://localhost:8000/docs** (Swagger UI)
+전체 엔드포인트:
+
+- `docker compose` 기본값: **http://localhost:8001/docs**
+- 로컬 백엔드 직기동(`backend/scripts/run_local.sh`): **http://localhost:8000/docs**
 
 ### REST API
 
@@ -955,8 +992,9 @@ docker compose exec postgres psql -U trader -d upbit_trader \
 
 ### WebSocket
 
-```
-ws://localhost:8000/ws/market?codes=KRW-BTC,KRW-ETH
+```text
+docker compose: ws://localhost:8001/ws/market?codes=KRW-BTC,KRW-ETH
+run_local.sh:  ws://localhost:8000/ws/market?codes=KRW-BTC,KRW-ETH
 ```
 
 | 경로 | 설명 | 데이터 형식 |

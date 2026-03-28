@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTradeStore } from "@/store/useTradeStore";
 import { cn } from "@/utils/cn";
 
@@ -14,59 +14,69 @@ export default function EquityCurvePanel() {
   const totalEquity = useTradeStore((s) => s.totalEquity);
   const availableKrw = useTradeStore((s) => s.availableKrw);
   const dailyPnl = useTradeStore((s) => s.dailyPnl);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     let removeResizeObserver: (() => void) | undefined;
+    let isMounted = true;
 
-    import("lightweight-charts").then(({ createChart, AreaSeries, ColorType }) => {
-      if (!chartContainerRef.current) return;
+    import("lightweight-charts")
+      .then(({ createChart, AreaSeries, ColorType }) => {
+        if (!chartContainerRef.current || !isMounted) return;
 
-      const chart = createChart(chartContainerRef.current, {
-        layout: {
-          background: { type: ColorType.Solid, color: "#111827" },
-          textColor: "#6b7280",
-        },
-        grid: {
-          vertLines: { color: "#17202e" },
-          horzLines: { color: "#17202e" },
-        },
-        rightPriceScale: {
-          borderColor: "#243041",
-          scaleMargins: { top: 0.2, bottom: 0.18 },
-        },
-        timeScale: {
-          borderColor: "#243041",
-          timeVisible: true,
-        },
-        crosshair: { mode: 0 },
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight,
-      });
-
-      const series = chart.addSeries(AreaSeries, {
-        lineColor: "#22c55e",
-        topColor: "rgba(34, 197, 94, 0.28)",
-        bottomColor: "rgba(34, 197, 94, 0.02)",
-        lineWidth: 2,
-      });
-
-      chartRef.current = chart;
-      areaSeriesRef.current = series;
-
-      const resizeObserver = new ResizeObserver(() => {
-        if (!chartContainerRef.current) return;
-        chart.applyOptions({
+        const chart = createChart(chartContainerRef.current, {
+          layout: {
+            background: { type: ColorType.Solid, color: "#111827" },
+            textColor: "#6b7280",
+          },
+          grid: {
+            vertLines: { color: "#17202e" },
+            horzLines: { color: "#17202e" },
+          },
+          rightPriceScale: {
+            borderColor: "#243041",
+            scaleMargins: { top: 0.2, bottom: 0.18 },
+          },
+          timeScale: {
+            borderColor: "#243041",
+            timeVisible: true,
+          },
+          crosshair: { mode: 0 },
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
         });
+
+        const series = chart.addSeries(AreaSeries, {
+          lineColor: "#22c55e",
+          topColor: "rgba(34, 197, 94, 0.28)",
+          bottomColor: "rgba(34, 197, 94, 0.02)",
+          lineWidth: 2,
+        });
+
+        chartRef.current = chart;
+        areaSeriesRef.current = series;
+        setLoadError(null);
+
+        const resizeObserver = new ResizeObserver(() => {
+          if (!chartContainerRef.current) return;
+          chart.applyOptions({
+            width: chartContainerRef.current.clientWidth,
+            height: chartContainerRef.current.clientHeight,
+          });
+        });
+        resizeObserver.observe(chartContainerRef.current);
+        removeResizeObserver = () => resizeObserver.disconnect();
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!isMounted) return;
+        setLoadError("자산 곡선 차트를 불러오지 못했습니다.");
       });
-      resizeObserver.observe(chartContainerRef.current);
-      removeResizeObserver = () => resizeObserver.disconnect();
-    });
 
     return () => {
+      isMounted = false;
       removeResizeObserver?.();
       chartRef.current?.remove();
       chartRef.current = null;
@@ -109,7 +119,11 @@ export default function EquityCurvePanel() {
         </div>
       </div>
       <div className="relative flex-1 px-2 py-2">
-        {equityCurve.length === 0 ? (
+        {loadError ? (
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-red-300">
+            {loadError}
+          </div>
+        ) : equityCurve.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-gray-600">
             자산 곡선 데이터 대기 중
           </div>

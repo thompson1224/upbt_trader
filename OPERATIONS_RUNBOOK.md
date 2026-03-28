@@ -1,6 +1,6 @@
 # Upbit AI Trader 운영 런북
 
-최종 업데이트: 2026-03-25
+최종 업데이트: 2026-03-28
 
 ## 목적
 
@@ -40,17 +40,40 @@ docker compose ps
 로컬에서 실행:
 
 ```bash
+./scripts/verify_all.sh
 ./scripts/ops_smoke_check.sh
 ```
+
+현재 스모크체크 범위:
+
+- `docker compose ps`
+- gateway `health`
+- 자동매매 / 외부보유분 손절 스위치
+- 최근 감사로그
+- `/api/v1/portfolio/performance` 요약 응답
+- 프런트 `/`, `/backtest`, `/performance/market/KRW-BTC`
+- gateway 컨테이너에서 `http://frontend:3000/settings` 접근
+
+주의:
+
+- 현재 `ops_smoke_check.sh`는 프런트 SSR 문자열(`연결 확인 중`, `자동매매 확인 중`)을 일부 확인합니다.
+- UI 문구 변경이나 렌더 타이밍 변화에 민감할 수 있으므로, 운영 자동화에서는 API 상태 확인과 함께 해석하는 것이 안전합니다.
+
+권장 순서:
+
+- `./scripts/verify_all.sh`: 프런트 lint/build + 백엔드 unit test + compose smoke
+- `./scripts/ops_smoke_check.sh`: 이미 떠 있는 compose 스택의 빠른 상태 점검
 
 수동 점검:
 
 ```bash
-curl -sS http://localhost:8000/health
-curl -sS http://localhost:8000/api/v1/settings/auto-trade
-curl -sS http://localhost:8000/api/v1/settings/external-position-stop-loss
-curl -sS http://localhost:8000/api/v1/positions
-curl -sS http://localhost:8000/api/v1/audit-events?limit=10
+export GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8001}"
+export GATEWAY_BASE_URL="http://localhost:${GATEWAY_HOST_PORT}"
+curl -sS "${GATEWAY_BASE_URL}/health"
+curl -sS "${GATEWAY_BASE_URL}/api/v1/settings/auto-trade"
+curl -sS "${GATEWAY_BASE_URL}/api/v1/settings/external-position-stop-loss"
+curl -sS "${GATEWAY_BASE_URL}/api/v1/positions"
+curl -sS "${GATEWAY_BASE_URL}/api/v1/audit-events?limit=10"
 ```
 
 ## 실거래 시작 전 체크리스트
@@ -68,13 +91,13 @@ curl -sS http://localhost:8000/api/v1/audit-events?limit=10
 자동매매 상태 확인:
 
 ```bash
-curl -sS http://localhost:8000/api/v1/settings/auto-trade
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade"
 ```
 
 자동매매 OFF:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": false}'
 ```
@@ -82,7 +105,7 @@ curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
 자동매매 ON:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}'
 ```
@@ -94,13 +117,13 @@ curl -sS -X PATCH http://localhost:8000/api/v1/settings/auto-trade \
 상태 확인:
 
 ```bash
-curl -sS http://localhost:8000/api/v1/settings/external-position-stop-loss
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/external-position-stop-loss"
 ```
 
 OFF:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/external-position-stop-loss \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/external-position-stop-loss" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": false}'
 ```
@@ -108,7 +131,7 @@ curl -sS -X PATCH http://localhost:8000/api/v1/settings/external-position-stop-l
 ON:
 
 ```bash
-curl -sS -X PATCH http://localhost:8000/api/v1/settings/external-position-stop-loss \
+curl -sS -X PATCH "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/external-position-stop-loss" \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}'
 ```
@@ -135,9 +158,17 @@ docker compose restart execution
 재시작 후 확인:
 
 ```bash
-curl -sS http://localhost:8000/health
-curl -sS http://localhost:8000/api/v1/settings/auto-trade
-curl -sS http://localhost:8000/api/v1/audit-events?limit=10
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/health"
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/settings/auto-trade"
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/audit-events?limit=10"
+curl -sS "${GATEWAY_BASE_URL:-http://localhost:${GATEWAY_HOST_PORT:-8001}}/api/v1/portfolio/performance?limit=5"
+```
+
+프런트 확인:
+
+```bash
+curl -sS "${FRONTEND_BASE_URL:-http://localhost:${FRONTEND_HOST_PORT:-3000}}/" | rg "Upbit AI Trader|연결 확인 중|자동매매 확인 중"
+curl -sS "${FRONTEND_BASE_URL:-http://localhost:${FRONTEND_HOST_PORT:-3000}}/performance/market/KRW-BTC" | rg "KRW-BTC"
 ```
 
 ## 마이그레이션 절차

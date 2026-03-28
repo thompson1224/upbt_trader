@@ -5,7 +5,7 @@ interface MarketState {
   tickers: Record<string, TickerData>;
   selectedMarket: string;
   signals: SignalData[];
-  isConnected: boolean;
+  isConnected: boolean | null;
   minConfidence: number;
 
   updateTicker: (data: TickerData) => void;
@@ -20,7 +20,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   tickers: {},
   selectedMarket: "KRW-BTC",
   signals: [],
-  isConnected: false,
+  isConnected: null,
   minConfidence: 0.5,
 
   updateTicker: (data) =>

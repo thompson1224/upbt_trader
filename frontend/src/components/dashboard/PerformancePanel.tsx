@@ -37,7 +37,10 @@ function formatCurrency(value: number) {
   return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString("ko-KR")}원`;
 }
 
-function formatPct(value: number) {
+function formatPct(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
   return `${(value * 100).toFixed(1)}%`;
 }
 
@@ -64,6 +67,13 @@ function formatScore(value: number | null) {
     return "-";
   }
   return value.toFixed(2);
+}
+
+function formatCount(value: number | null) {
+  if (value == null || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${value}건`;
 }
 
 function formatMinutes(value: number) {
@@ -162,11 +172,21 @@ function getDailyHistoryStats(rows: DailyReportResponse[]) {
   };
 }
 
-function getMetricDeltaTone(value: number, inverse = false) {
+function getMetricDeltaTone(value: number | null, inverse = false) {
+  if (value == null || Number.isNaN(value)) {
+    return "text-gray-600";
+  }
   if (inverse) {
     return value <= 0 ? "text-emerald-400" : "text-red-400";
   }
   return value >= 0 ? "text-emerald-400" : "text-red-400";
+}
+
+function getDelta(base: number | null, current: number | null) {
+  if (base == null || current == null || Number.isNaN(base) || Number.isNaN(current)) {
+    return null;
+  }
+  return current - base;
 }
 
 function buildDailyTrendInsights(current: DailyReportResponse, previous: DailyReportResponse) {
@@ -587,9 +607,9 @@ function BacktestBaselineCard({
     );
   }
 
-  const winRateDelta = actual.winRate - metrics.winRate;
-  const profitFactorDelta = actual.profitFactor - metrics.profitFactor;
-  const tradeDelta = actual.totalTrades - metrics.totalTrades;
+  const winRateDelta = getDelta(metrics.winRate, actual.winRate);
+  const profitFactorDelta = getDelta(metrics.profitFactor, actual.profitFactor);
+  const tradeDelta = getDelta(metrics.totalTrades, actual.totalTrades);
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
@@ -612,21 +632,21 @@ function BacktestBaselineCard({
           <div className="text-gray-500">기준 승률</div>
           <div className="mt-1 font-mono text-gray-200">{formatPct(metrics.winRate)}</div>
           <div className={cn("font-mono text-[11px]", getMetricDeltaTone(winRateDelta))}>
-            실거래 {formatDelta(winRateDelta * 100, "%p")}
+            실거래 {winRateDelta == null ? "-" : formatDelta(winRateDelta * 100, "%p")}
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
           <div className="text-gray-500">기준 PF</div>
-          <div className="mt-1 font-mono text-gray-200">{metrics.profitFactor.toFixed(2)}</div>
+          <div className="mt-1 font-mono text-gray-200">{formatScore(metrics.profitFactor)}</div>
           <div className={cn("font-mono text-[11px]", getMetricDeltaTone(profitFactorDelta))}>
-            실거래 {formatDelta(profitFactorDelta)}
+            실거래 {profitFactorDelta == null ? "-" : formatDelta(profitFactorDelta)}
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
           <div className="text-gray-500">기준 거래수</div>
-          <div className="mt-1 font-mono text-gray-200">{metrics.totalTrades}건</div>
+          <div className="mt-1 font-mono text-gray-200">{formatCount(metrics.totalTrades)}</div>
           <div className={cn("font-mono text-[11px]", getMetricDeltaTone(tradeDelta, true))}>
-            실거래 {formatDelta(tradeDelta, "건")}
+            실거래 {tradeDelta == null ? "-" : formatDelta(tradeDelta, "건")}
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
@@ -1142,7 +1162,7 @@ export default function PerformancePanel() {
     },
     {
       label: "Profit Factor",
-      value: Number.isFinite(summary.profitFactor) ? summary.profitFactor.toFixed(2) : "∞",
+      value: Number.isFinite(summary.profitFactor) ? formatScore(summary.profitFactor) : "∞",
       positive: summary.profitFactor >= 1,
       icon: BarChart3,
     },
