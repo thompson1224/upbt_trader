@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """FastAPI Gateway - REST API + WebSocket 진입점"""
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,7 @@ from apps.gateway.api.v1 import (
     markets,
     orders,
     portfolio,
+    risk,
     settings as settings_router,
     signals,
 )
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
 
     # Redis → WebSocket 브릿지 시작
     import asyncio
+
     tasks = [
         asyncio.create_task(market_ws.start_redis_subscriber()),
         asyncio.create_task(signal_ws.start_redis_subscriber()),
@@ -76,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(backtests.router, prefix=prefix, tags=["backtests"])
     app.include_router(manual_orders.router, prefix=prefix, tags=["manual-orders"])
     app.include_router(settings_router.router, prefix=prefix, tags=["settings"])
+    app.include_router(risk.router, prefix=prefix, tags=["risk"])
 
     # WebSocket 라우터
     app.include_router(market_ws.router, tags=["websocket"])

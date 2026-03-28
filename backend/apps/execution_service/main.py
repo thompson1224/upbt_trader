@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """주문 실행 서비스 - 신호 수신 → 위험 검증 → 주문 전송 → 체결 동기화"""
 import asyncio
 import json
@@ -18,11 +19,18 @@ from libs.db.session import get_session_factory
 from libs.db.models import Signal, Order, Fill, Position, Coin, RuntimeState
 from libs.upbit.rest_client import UpbitRestClient
 from apps.risk_service.guards.pre_trade_guard import (
-    PreTradeRiskGuard, PositionSizer, AccountState,
+    PreTradeRiskGuard,
+    PositionSizer,
+    AccountState,
 )
 
 # Upbit 시장 경보 값 (이 값만 True 처리)
-_MARKET_WARNING_VALUES = {"CAUTION", "WARNING", "PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING"}
+_MARKET_WARNING_VALUES = {
+    "CAUTION",
+    "WARNING",
+    "PRICE_FLUCTUATIONS",
+    "TRADING_VOLUME_SOARING",
+}
 POSITION_SOURCE_STRATEGY = "strategy"
 POSITION_SOURCE_EXTERNAL = "external"
 POSITION_SOURCE_OVERRIDE_KEY_PREFIX = "position.management."
@@ -42,9 +50,9 @@ def _is_market_warning(raw: str | None) -> bool:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SEC = 5         # 신호 폴링 주기
+POLL_INTERVAL_SEC = 5  # 신호 폴링 주기
 ORDER_SYNC_INTERVAL_SEC = 10  # 미체결 주문 동기화 주기
-SL_TP_INTERVAL_SEC = 10       # SL/TP 모니터 주기
+SL_TP_INTERVAL_SEC = 10  # SL/TP 모니터 주기
 BALANCE_SYNC_INTERVAL_SEC = 30
 EQUITY_CURVE_MAX_POINTS = 500
 PORTFOLIO_EQUITY_CURVE_KEY = "portfolio:equity_curve"
@@ -54,6 +62,9 @@ RUNTIME_STATE_LOSS_STREAK_DATE_KEY = "risk.loss_streak.date"
 UPBIT_FEE_RATE = 0.0005
 RISK_LOSS_STREAK_REDIS_KEY = "risk:loss_streak"
 RISK_LOSS_STREAK_DATE_REDIS_KEY = "risk:loss_streak:date"
+RISK_REQUEST_CHANNEL = "upbit:risk:request"
+RISK_RESPONSE_CHANNEL = "upbit:risk:response"
+RISK_RPC_TIMEOUT_SEC = 5.0
 
 # 수수료(왕복 0.1%) 대비 최소 기대 수익률
 MIN_PROFIT_THRESHOLD = 0.003  # 0.3% 미만 기대 수익 신호 거부
@@ -158,7 +169,9 @@ def _resolve_protection_levels(
     )
     return (
         suggested_stop_loss if suggested_stop_loss is not None else default_stop_loss,
-        suggested_take_profit if suggested_take_profit is not None else default_take_profit,
+        suggested_take_profit
+        if suggested_take_profit is not None
+        else default_take_profit,
     )
 
 
@@ -288,7 +301,9 @@ def _runtime_state_daily_pnl_key(now: datetime | None = None) -> str:
 def _current_kst_day_start_utc(now: datetime | None = None) -> datetime:
     kst = ZoneInfo("Asia/Seoul")
     current = now.astimezone(kst) if now else datetime.now(tz=kst)
-    return current.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    return current.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
+        timezone.utc
+    )
 
 
 def _risk_metric_date(now: datetime | None = None) -> str:
@@ -359,7 +374,11 @@ def _build_closed_trades_for_risk(fill_rows: list[dict]) -> list[dict]:
             continue
 
         remaining_exit_qty = volume
-        while lots and remaining_exit_qty > 1e-9 and not isclose(remaining_exit_qty, 0.0, abs_tol=1e-9):
+        while (
+            lots
+            and remaining_exit_qty > 1e-9
+            and not isclose(remaining_exit_qty, 0.0, abs_tol=1e-9)
+        ):
             lot = lots[0]
             lot_qty = lot["remainingQty"]
             if lot_qty <= 1e-9 or isclose(lot_qty, 0.0, abs_tol=1e-9):
@@ -387,7 +406,9 @@ def _build_closed_trades_for_risk(fill_rows: list[dict]) -> list[dict]:
             lot["remainingFee"] -= entry_fee
             remaining_exit_qty -= matched_qty
 
-            if lot["remainingQty"] <= 1e-9 or isclose(lot["remainingQty"], 0.0, abs_tol=1e-9):
+            if lot["remainingQty"] <= 1e-9 or isclose(
+                lot["remainingQty"], 0.0, abs_tol=1e-9
+            ):
                 lots.pop(0)
 
     trades.sort(key=lambda trade: trade["exitTs"])
@@ -454,7 +475,9 @@ class ExecutionService:
         try:
             val = await self._redis.get("auto_trade:enabled")
             if val is None:
-                logger.warning("auto_trade flag missing in Redis; fail-closed to disabled")
+                logger.warning(
+                    "auto_trade flag missing in Redis; fail-closed to disabled"
+                )
                 return False
             return val.decode() == "1"
         except Exception as e:
@@ -498,10 +521,87 @@ class ExecutionService:
             payload = json.loads(val.decode())
             if not isinstance(payload, list):
                 return set()
-            return {str(item).strip() for item in payload if str(item).strip() in ALLOWED_KST_HOUR_BLOCKS}
+            return {
+                str(item).strip()
+                for item in payload
+                if str(item).strip() in ALLOWED_KST_HOUR_BLOCKS
+            }
         except Exception as e:
             logger.warning("Failed to read blocked buy hour blocks from Redis: %s", e)
             return set()
+
+    async def _evaluate_risk_via_rpc(
+        self,
+        side: str,
+        market: str,
+        suggested_qty: float,
+        entry_price: float,
+        stop_loss: float | None,
+        account: AccountState,
+    ) -> tuple[bool, str, float | None]:
+        """risk_service에 RPC로 위험 평가 요청. 실패 시 로컬评估로 폴백."""
+        import uuid
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "request_id": request_id,
+            "side": side,
+            "market": market,
+            "suggested_qty": suggested_qty,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "account": {
+                "total_equity": account.total_equity,
+                "available_krw": account.available_krw,
+                "daily_pnl": account.daily_pnl,
+                "consecutive_losses": account.consecutive_losses,
+                "open_positions_count": account.open_positions_count,
+                "market_warning": account.market_warning,
+            },
+        }
+
+        try:
+            pubsub = self._redis.pubsub()
+            await pubsub.subscribe(RISK_RESPONSE_CHANNEL)
+            try:
+                await self._redis.publish(RISK_REQUEST_CHANNEL, json.dumps(request))
+
+                start_time = asyncio.get_event_loop().time()
+                while (
+                    asyncio.get_event_loop().time() - start_time
+                ) < RISK_RPC_TIMEOUT_SEC:
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(timeout=0.5), timeout=1.0
+                    )
+                    if message is None:
+                        continue
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        response = json.loads(message["data"])
+                        if response.get("request_id") == request_id:
+                            return (
+                                response.get("approved", False),
+                                response.get("reason", "Unknown"),
+                                response.get("adjusted_qty"),
+                            )
+                    except json.JSONDecodeError:
+                        continue
+            finally:
+                await pubsub.unsubscribe(RISK_RESPONSE_CHANNEL)
+                await pubsub.close()
+        except Exception as e:
+            logger.warning("Risk RPC failed, using local evaluation: %s", e)
+
+        decision = self.risk_guard.evaluate(
+            side=side,
+            market=market,
+            suggested_qty=suggested_qty,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            account=account,
+        )
+        return (decision.approved, decision.reason, decision.adjusted_qty)
 
     # ── 신호 폴링 루프 ──────────────────────────────────────
 
@@ -527,7 +627,11 @@ class ExecutionService:
             return daily_pnl, loss_streak
         except Exception as e:
             logger.warning("Risk metric read failed: %s", e)
-            daily_pnl, loss_streak, streak_date = await self._load_risk_metrics_from_db()
+            (
+                daily_pnl,
+                loss_streak,
+                streak_date,
+            ) = await self._load_risk_metrics_from_db()
             if _should_reset_loss_streak(streak_date, current_date):
                 await self._persist_risk_metrics_to_db(daily_pnl, 0, current_date)
                 return daily_pnl, 0
@@ -545,7 +649,11 @@ class ExecutionService:
             await self._compute_risk_metrics()
         except Exception as e:
             logger.warning("Risk metric update failed: %s", e)
-            daily_pnl, loss_streak, _streak_date = await self._load_risk_metrics_from_db()
+            (
+                daily_pnl,
+                loss_streak,
+                _streak_date,
+            ) = await self._load_risk_metrics_from_db()
             updated_daily_pnl = daily_pnl + trade_pnl
             updated_loss_streak = (loss_streak + 1) if trade_pnl < 0 else 0
             await self._persist_risk_metrics_to_db(
@@ -563,7 +671,11 @@ class ExecutionService:
                 RISK_LOSS_STREAK_REDIS_KEY,
                 RISK_LOSS_STREAK_DATE_REDIS_KEY,
             )
-            if daily_raw is not None or streak_raw is not None or streak_date_raw is not None:
+            if (
+                daily_raw is not None
+                or streak_raw is not None
+                or streak_date_raw is not None
+            ):
                 return
         except Exception as e:
             logger.warning("Runtime state pre-check failed: %s", e)
@@ -573,7 +685,9 @@ class ExecutionService:
             await self._redis.set(daily_key, daily_pnl)
             await self._redis.expire(daily_key, 60 * 60 * 48)
             await self._redis.set(RISK_LOSS_STREAK_REDIS_KEY, loss_streak)
-            await self._redis.set(RISK_LOSS_STREAK_DATE_REDIS_KEY, streak_date or _risk_metric_date())
+            await self._redis.set(
+                RISK_LOSS_STREAK_DATE_REDIS_KEY, streak_date or _risk_metric_date()
+            )
         except Exception as e:
             logger.warning("Runtime state restore to Redis failed: %s", e)
 
@@ -607,7 +721,9 @@ class ExecutionService:
         async with self.session_factory() as db:
             daily_state = await db.get(RuntimeState, _runtime_state_daily_pnl_key())
             streak_state = await db.get(RuntimeState, RUNTIME_STATE_LOSS_STREAK_KEY)
-            streak_date_state = await db.get(RuntimeState, RUNTIME_STATE_LOSS_STREAK_DATE_KEY)
+            streak_date_state = await db.get(
+                RuntimeState, RUNTIME_STATE_LOSS_STREAK_DATE_KEY
+            )
             daily_pnl = float(daily_state.value) if daily_state else 0.0
             loss_streak = int(streak_state.value) if streak_state else 0
             streak_date = streak_date_state.value if streak_date_state else None
@@ -629,7 +745,11 @@ class ExecutionService:
 
             streak_state = await db.get(RuntimeState, RUNTIME_STATE_LOSS_STREAK_KEY)
             if streak_state is None:
-                db.add(RuntimeState(key=RUNTIME_STATE_LOSS_STREAK_KEY, value=str(loss_streak)))
+                db.add(
+                    RuntimeState(
+                        key=RUNTIME_STATE_LOSS_STREAK_KEY, value=str(loss_streak)
+                    )
+                )
             else:
                 streak_state.value = str(loss_streak)
 
@@ -654,7 +774,9 @@ class ExecutionService:
 
     async def _sync_exchange_positions_once(self):
         balances = await self.upbit.get_balances()
-        external_stop_loss_enabled = await self._is_external_position_stop_loss_enabled()
+        external_stop_loss_enabled = (
+            await self._is_external_position_stop_loss_enabled()
+        )
         await self._sync_positions_from_exchange(balances, external_stop_loss_enabled)
         await self._store_portfolio_snapshot([], balances=balances)
 
@@ -706,16 +828,18 @@ class ExecutionService:
                     external_stop_loss_enabled=external_stop_loss_enabled,
                 )
                 if position is None:
-                    db.add(Position(
-                        coin_id=coin.id,
-                        qty=payload["qty"],
-                        avg_entry_price=payload["avg_entry_price"],
-                        unrealized_pnl=0.0,
-                        realized_pnl=0.0,
-                        source=source,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
-                    ))
+                    db.add(
+                        Position(
+                            coin_id=coin.id,
+                            qty=payload["qty"],
+                            avg_entry_price=payload["avg_entry_price"],
+                            unrealized_pnl=0.0,
+                            realized_pnl=0.0,
+                            source=source,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
+                        )
+                    )
                     continue
 
                 position.qty = payload["qty"]
@@ -771,9 +895,7 @@ class ExecutionService:
 
     async def _get_existing_order_id(self, db, signal_id: int) -> int | None:
         result = await db.execute(
-            select(Order.id)
-            .where(Order.signal_id == signal_id)
-            .limit(1)
+            select(Order.id).where(Order.signal_id == signal_id).limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -815,9 +937,7 @@ class ExecutionService:
 
     async def _recover_orphaned_claimed_signals(self) -> None:
         async with self.session_factory() as db:
-            result = await db.execute(
-                select(Signal).where(Signal.status == "approved")
-            )
+            result = await db.execute(select(Signal).where(Signal.status == "approved"))
             approved_signals = result.scalars().all()
 
             recovered_new = 0
@@ -862,7 +982,9 @@ class ExecutionService:
 
         claimed = await self._claim_signal_for_execution(signal.id)
         if not claimed:
-            logger.info("Signal %s already claimed or processed by another worker", signal.id)
+            logger.info(
+                "Signal %s already claimed or processed by another worker", signal.id
+            )
             return
 
         async with self.session_factory() as db:
@@ -914,10 +1036,15 @@ class ExecutionService:
             return
 
         expected_profit = abs(signal.final_score) * 0.02
-        if _should_enforce_expected_profit_threshold(signal.side, manual_test_signal) and expected_profit < MIN_PROFIT_THRESHOLD:
+        if (
+            _should_enforce_expected_profit_threshold(signal.side, manual_test_signal)
+            and expected_profit < MIN_PROFIT_THRESHOLD
+        ):
             async with self.session_factory() as db:
                 await self._update_signal_status(
-                    db, signal, "rejected",
+                    db,
+                    signal,
+                    "rejected",
                     f"Expected profit {expected_profit:.3%} < threshold {MIN_PROFIT_THRESHOLD:.3%}",
                 )
             return
@@ -948,11 +1075,15 @@ class ExecutionService:
             position = pos_result.scalar_one_or_none()
 
             if signal.side == "buy" and position and position.qty > 0:
-                await self._update_signal_status(db, signal, "rejected", "Already in position")
+                await self._update_signal_status(
+                    db, signal, "rejected", "Already in position"
+                )
                 return
 
             if signal.side == "sell" and (not position or position.qty <= 0):
-                await self._update_signal_status(db, signal, "rejected", "No position to sell")
+                await self._update_signal_status(
+                    db, signal, "rejected", "No position to sell"
+                )
                 return
 
             current_position_qty = position.qty if position else 0.0
@@ -974,13 +1105,17 @@ class ExecutionService:
             entry_price = await self.upbit.get_ticker(coin.market)
         except Exception as e:
             async with self.session_factory() as db:
-                await self._update_signal_status(db, signal, "rejected", f"Ticker fetch error: {e}")
+                await self._update_signal_status(
+                    db, signal, "rejected", f"Ticker fetch error: {e}"
+                )
             logger.error("Ticker fetch failed for %s: %s", coin.market, e)
             return
 
         if not entry_price or entry_price <= 0:
             async with self.session_factory() as db:
-                await self._update_signal_status(db, signal, "rejected", "Invalid ticker price")
+                await self._update_signal_status(
+                    db, signal, "rejected", "Invalid ticker price"
+                )
             logger.warning("Invalid ticker price for %s, skipping", coin.market)
             return
 
@@ -1009,7 +1144,9 @@ class ExecutionService:
             )
             if qty <= 0:
                 async with self.session_factory() as db:
-                    await self._update_signal_status(db, signal, "rejected", "Invalid manual test qty")
+                    await self._update_signal_status(
+                        db, signal, "rejected", "Invalid manual test qty"
+                    )
                 return
             order_value = qty * entry_price
             if signal.side == "buy":
@@ -1024,7 +1161,9 @@ class ExecutionService:
                     return
                 if order_value > available_krw:
                     async with self.session_factory() as db:
-                        await self._update_signal_status(db, signal, "rejected", "Insufficient KRW")
+                        await self._update_signal_status(
+                            db, signal, "rejected", "Insufficient KRW"
+                        )
                     return
             elif order_value < self.sizer.MIN_ORDER_KRW:
                 async with self.session_factory() as db:
@@ -1065,7 +1204,9 @@ class ExecutionService:
                     qty = self.sizer.MIN_ORDER_KRW / entry_price
                 else:
                     async with self.session_factory() as db:
-                        await self._update_signal_status(db, signal, "rejected", "Insufficient qty")
+                        await self._update_signal_status(
+                            db, signal, "rejected", "Insufficient qty"
+                        )
                     return
         else:
             async with self.session_factory() as db:
@@ -1078,7 +1219,7 @@ class ExecutionService:
         if manual_test_signal:
             final_qty = qty
         else:
-            decision = self.risk_guard.evaluate(
+            approved, reason, adjusted_qty = await self._evaluate_risk_via_rpc(
                 side=signal.side,
                 market=coin.market,
                 suggested_qty=qty,
@@ -1087,22 +1228,26 @@ class ExecutionService:
                 account=account,
             )
 
-            if not decision.approved:
+            if not approved:
                 async with self.session_factory() as db:
-                    await self._update_signal_status(db, signal, "rejected", decision.reason)
-                logger.warning("Signal rejected: %s - %s", signal.id, decision.reason)
-                # 거절 이벤트 브로드캐스트
+                    await self._update_signal_status(db, signal, "rejected", reason)
+                logger.warning("Signal rejected: %s - %s", signal.id, reason)
                 try:
-                    await self._redis.publish("upbit:trade_event", json.dumps({
-                        "type": "risk_rejected",
-                        "market": coin.market,
-                        "reason": decision.reason,
-                    }))
+                    await self._redis.publish(
+                        "upbit:trade_event",
+                        json.dumps(
+                            {
+                                "type": "risk_rejected",
+                                "market": coin.market,
+                                "reason": reason,
+                            }
+                        ),
+                    )
                 except Exception:
                     pass
                 return
 
-            final_qty = decision.adjusted_qty or qty
+            final_qty = adjusted_qty if adjusted_qty is not None else qty
 
         try:
             if signal.side == "buy":
@@ -1180,18 +1325,26 @@ class ExecutionService:
 
             logger.info(
                 "Order placed: %s %s qty=%.6f uuid=%s",
-                coin.market, signal.side, order_volume, result.get("uuid"),
+                coin.market,
+                signal.side,
+                order_volume,
+                result.get("uuid"),
             )
 
             # 주문 접수 이벤트 브로드캐스트
             try:
-                await self._redis.publish("upbit:trade_event", json.dumps({
-                    "type": "order_placed",
-                    "market": coin.market,
-                    "side": "bid" if signal.side == "buy" else "ask",
-                    "price": entry_price,
-                    "volume": order_volume,
-                }))
+                await self._redis.publish(
+                    "upbit:trade_event",
+                    json.dumps(
+                        {
+                            "type": "order_placed",
+                            "market": coin.market,
+                            "side": "bid" if signal.side == "buy" else "ask",
+                            "price": entry_price,
+                            "volume": order_volume,
+                        }
+                    ),
+                )
             except Exception:
                 pass
 
@@ -1199,13 +1352,18 @@ class ExecutionService:
             async with self.session_factory() as db:
                 await self._update_signal_status(db, signal, "rejected", str(e))
             try:
-                await self._redis.publish("upbit:trade_event", json.dumps({
-                    "type": "order_failed",
-                    "market": coin.market,
-                    "side": "bid" if signal.side == "buy" else "ask",
-                    "reason": str(e),
-                    "signalId": signal.id,
-                }))
+                await self._redis.publish(
+                    "upbit:trade_event",
+                    json.dumps(
+                        {
+                            "type": "order_failed",
+                            "market": coin.market,
+                            "side": "bid" if signal.side == "buy" else "ask",
+                            "reason": str(e),
+                            "signalId": signal.id,
+                        }
+                    ),
+                )
             except Exception:
                 pass
             logger.error("Order failed: %s - %s", coin.market, e)
@@ -1251,12 +1409,15 @@ class ExecutionService:
                             select(Fill.trade_uuid).where(Fill.order_id == order.id)
                         )
                         existing_trade_uuids = {
-                            trade_uuid for trade_uuid in existing_fill_result.scalars().all()
+                            trade_uuid
+                            for trade_uuid in existing_fill_result.scalars().all()
                         }
                         new_trades = _filter_new_trades(trades, existing_trade_uuids)
 
                         if new_trades:
-                            executed_volume, _executed_funds, avg_price, _total_fee = _summarize_trades(new_trades)
+                            executed_volume, _executed_funds, avg_price, _total_fee = (
+                                _summarize_trades(new_trades)
+                            )
                             for trade in new_trades:
                                 fill = Fill(
                                     order_id=order.id,
@@ -1268,19 +1429,30 @@ class ExecutionService:
                                 )
                                 db.add(fill)
 
-                            realized_pnl = await self._apply_fill_delta(db, order, new_trades)
+                            realized_pnl = await self._apply_fill_delta(
+                                db, order, new_trades
+                            )
                             changed = True
 
                             # 체결 이벤트 브로드캐스트
                             try:
-                                event_type = "order_filled" if new_state == "done" else "order_partially_filled"
-                                await self._redis.publish("upbit:trade_event", json.dumps({
-                                    "type": event_type,
-                                    "market": "",
-                                    "side": order.side,
-                                    "price": avg_price,
-                                    "volume": executed_volume,
-                                }))
+                                event_type = (
+                                    "order_filled"
+                                    if new_state == "done"
+                                    else "order_partially_filled"
+                                )
+                                await self._redis.publish(
+                                    "upbit:trade_event",
+                                    json.dumps(
+                                        {
+                                            "type": event_type,
+                                            "market": "",
+                                            "side": order.side,
+                                            "price": avg_price,
+                                            "volume": executed_volume,
+                                        }
+                                    ),
+                                )
                             except Exception:
                                 pass
 
@@ -1288,14 +1460,20 @@ class ExecutionService:
                         if realized_pnl is not None:
                             await self._record_trade_result(realized_pnl)
             except Exception as e:
-                logger.warning("Order sync failed for %s: %s", order.exchange_order_id, e)
+                logger.warning(
+                    "Order sync failed for %s: %s", order.exchange_order_id, e
+                )
 
         if changed:
             await self._store_portfolio_snapshot([])
 
-    async def _apply_fill_delta(self, db, order: Order, trades: list[dict]) -> float | None:
+    async def _apply_fill_delta(
+        self, db, order: Order, trades: list[dict]
+    ) -> float | None:
         """신규 체결분만 포지션에 반영. 매도 체결이면 실현손익을 반환."""
-        executed_volume, executed_funds, avg_price, total_fee = _summarize_trades(trades)
+        executed_volume, executed_funds, avg_price, total_fee = _summarize_trades(
+            trades
+        )
         if executed_volume <= 0:
             return None
 
@@ -1308,7 +1486,8 @@ class ExecutionService:
             if position:
                 total_qty = position.qty + executed_volume
                 position.avg_entry_price = (
-                    position.avg_entry_price * position.qty + avg_price * executed_volume
+                    position.avg_entry_price * position.qty
+                    + avg_price * executed_volume
                 ) / total_qty
                 position.qty = total_qty
             else:
@@ -1334,7 +1513,9 @@ class ExecutionService:
             return realized_pnl
         return None
 
-    async def _apply_signal_protection(self, db, order: Order, position: Position | None):
+    async def _apply_signal_protection(
+        self, db, order: Order, position: Position | None
+    ):
         """매수 체결 후 신호에 담긴 SL/TP를 실제 포지션에 반영."""
         if not position or not order.signal_id:
             return
@@ -1367,7 +1548,9 @@ class ExecutionService:
             await asyncio.sleep(SL_TP_INTERVAL_SEC)
 
     async def _check_all_positions_sl_tp(self):
-        external_stop_loss_enabled = await self._is_external_position_stop_loss_enabled()
+        external_stop_loss_enabled = (
+            await self._is_external_position_stop_loss_enabled()
+        )
         async with self.session_factory() as db:
             result = await db.execute(
                 select(Position, Coin)
@@ -1376,7 +1559,9 @@ class ExecutionService:
             )
             rows = result.all()
 
-        price_map = await self.upbit.get_tickers([coin.market for _position, coin in rows])
+        price_map = await self.upbit.get_tickers(
+            [coin.market for _position, coin in rows]
+        )
         portfolio_rows = []
         for position, coin in rows:
             try:
@@ -1435,17 +1620,20 @@ class ExecutionService:
                 db_pos.take_profit,
             ):
                 sl_triggered = (
-                    db_pos.stop_loss is not None
-                    and current_price <= db_pos.stop_loss
+                    db_pos.stop_loss is not None and current_price <= db_pos.stop_loss
                 )
                 tp_triggered = (
                     db_pos.take_profit is not None
                     and current_price >= db_pos.take_profit
                 )
                 if sl_triggered:
-                    trigger_reason = f"SL triggered: {current_price:.0f} <= {db_pos.stop_loss:.0f}"
+                    trigger_reason = (
+                        f"SL triggered: {current_price:.0f} <= {db_pos.stop_loss:.0f}"
+                    )
                 elif tp_triggered:
-                    trigger_reason = f"TP triggered: {current_price:.0f} >= {db_pos.take_profit:.0f}"
+                    trigger_reason = (
+                        f"TP triggered: {current_price:.0f} >= {db_pos.take_profit:.0f}"
+                    )
 
             db_pos.unrealized_pnl = unrealized_pnl
             await db.commit()
@@ -1454,22 +1642,29 @@ class ExecutionService:
 
         # Redis 브로드캐스트 — 미실현 손익 변경
         try:
-            await self._redis.publish("upbit:position_update", json.dumps({
-                "coinId": position.coin_id,
-                "market": coin.market,
-                "qty": position.qty,
-                "avgEntryPrice": position.avg_entry_price,
-                "currentPrice": current_price,
-                "unrealizedPnl": unrealized_pnl,
-                "stopLoss": position.stop_loss,
-                "takeProfit": position.take_profit,
-            }))
+            await self._redis.publish(
+                "upbit:position_update",
+                json.dumps(
+                    {
+                        "coinId": position.coin_id,
+                        "market": coin.market,
+                        "qty": position.qty,
+                        "avgEntryPrice": position.avg_entry_price,
+                        "currentPrice": current_price,
+                        "unrealizedPnl": unrealized_pnl,
+                        "stopLoss": position.stop_loss,
+                        "takeProfit": position.take_profit,
+                    }
+                ),
+            )
         except Exception as e:
             logger.warning("Failed to publish position_update: %s", e)
 
         # SL/TP 트리거 시 시장가 매도
         if trigger_reason:
-            logger.info("Position close triggered for %s: %s", coin.market, trigger_reason)
+            logger.info(
+                "Position close triggered for %s: %s", coin.market, trigger_reason
+            )
             await self._execute_sl_tp_sell(position, coin, trigger_reason)
 
         return {
@@ -1516,27 +1711,39 @@ class ExecutionService:
 
         logger.info(
             "SL/TP order placed: %s qty=%.6f uuid=%s reason=%s",
-            coin.market, qty, result.get("uuid"), reason,
+            coin.market,
+            qty,
+            result.get("uuid"),
+            reason,
         )
 
         # SL/TP 이벤트 브로드캐스트
         try:
             event_type = "sl_triggered" if "SL" in reason else "tp_triggered"
             current_price = await self.upbit.get_ticker(coin.market)
-            await self._redis.publish("upbit:trade_event", json.dumps({
-                "type": event_type,
-                "market": coin.market,
-                "price": current_price,
-            }))
+            await self._redis.publish(
+                "upbit:trade_event",
+                json.dumps(
+                    {
+                        "type": event_type,
+                        "market": coin.market,
+                        "price": current_price,
+                    }
+                ),
+            )
         except Exception:
             pass
 
-    async def _store_portfolio_snapshot(self, portfolio_rows: list[dict], balances: list[dict] | None = None):
+    async def _store_portfolio_snapshot(
+        self, portfolio_rows: list[dict], balances: list[dict] | None = None
+    ):
         """실시간 포트폴리오 스냅샷과 자산곡선을 Redis에 저장."""
         try:
             if balances is None:
                 balances = await self.upbit.get_balances()
-            available_krw, _exchange_positions = _extract_exchange_position_rows(balances)
+            available_krw, _exchange_positions = _extract_exchange_position_rows(
+                balances
+            )
             total_krw = _extract_total_krw_balance(balances)
         except Exception as e:
             logger.warning("Portfolio snapshot skipped: balance fetch failed: %s", e)
@@ -1551,18 +1758,23 @@ class ExecutionService:
                 )
                 rows = result.all()
 
-            price_map = await self.upbit.get_tickers([coin.market for position, coin in rows if position.qty > 0])
+            price_map = await self.upbit.get_tickers(
+                [coin.market for position, coin in rows if position.qty > 0]
+            )
             for position, coin in rows:
                 current_price = price_map.get(coin.market)
                 if current_price and current_price > 0:
-                    portfolio_rows.append({
-                        "coinId": position.coin_id,
-                        "market": coin.market,
-                        "qty": position.qty,
-                        "currentPrice": current_price,
-                        "marketValue": current_price * position.qty,
-                        "unrealizedPnl": (current_price - position.avg_entry_price) * position.qty,
-                    })
+                    portfolio_rows.append(
+                        {
+                            "coinId": position.coin_id,
+                            "market": coin.market,
+                            "qty": position.qty,
+                            "currentPrice": current_price,
+                            "marketValue": current_price * position.qty,
+                            "unrealizedPnl": (current_price - position.avg_entry_price)
+                            * position.qty,
+                        }
+                    )
 
         position_value = sum(row["marketValue"] for row in portfolio_rows)
         daily_pnl, _ = await self._compute_risk_metrics()
@@ -1578,19 +1790,28 @@ class ExecutionService:
         try:
             payload = json.dumps(snapshot)
             await self._redis.rpush(PORTFOLIO_EQUITY_CURVE_KEY, payload)
-            await self._redis.ltrim(PORTFOLIO_EQUITY_CURVE_KEY, -EQUITY_CURVE_MAX_POINTS, -1)
+            await self._redis.ltrim(
+                PORTFOLIO_EQUITY_CURVE_KEY, -EQUITY_CURVE_MAX_POINTS, -1
+            )
             await self._redis.set(PORTFOLIO_LATEST_SNAPSHOT_KEY, payload)
-            await self._redis.publish("upbit:position_update", json.dumps({
-                "type": "portfolio_snapshot",
-                **snapshot,
-            }))
+            await self._redis.publish(
+                "upbit:position_update",
+                json.dumps(
+                    {
+                        "type": "portfolio_snapshot",
+                        **snapshot,
+                    }
+                ),
+            )
         except Exception as e:
             logger.warning("Portfolio snapshot store failed: %s", e)
 
     # ── 공통 헬퍼 ──────────────────────────────────────────
 
     @staticmethod
-    async def _update_signal_status(db, signal: Signal, status: str, reason: str | None):
+    async def _update_signal_status(
+        db, signal: Signal, status: str, reason: str | None
+    ):
         db_signal = await db.get(Signal, signal.id)
         if db_signal:
             db_signal.status = status
