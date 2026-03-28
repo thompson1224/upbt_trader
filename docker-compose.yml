@@ -122,7 +122,6 @@ services:
       args:
         SERVICE: backtest_service
     command: python -m apps.backtest_service.main
-    profiles: ["stub"]
     env_file: ./backend/.env
     depends_on:
       postgres:

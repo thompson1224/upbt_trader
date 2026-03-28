@@ -148,7 +148,9 @@ def _build_walk_forward_windows(req: BacktestRunRequest) -> list[dict]:
     return windows
 
 
-def _compute_return_pct(pnl: float, fee: float, entry_price: float, qty: float) -> float:
+def _compute_return_pct(
+    pnl: float, fee: float, entry_price: float, qty: float
+) -> float:
     gross_value = entry_price * qty
     if gross_value <= 0:
         return 0.0
@@ -158,7 +160,9 @@ def _compute_return_pct(pnl: float, fee: float, entry_price: float, qty: float) 
 async def _load_coin_and_candles(req: BacktestRunRequest, db: AsyncSession):
     import pandas as pd
 
-    coin_result = await db.execute(select(Coin).where(Coin.market == req.market.upper()))
+    coin_result = await db.execute(
+        select(Coin).where(Coin.market == req.market.upper())
+    )
     coin = coin_result.scalar_one_or_none()
     if not coin:
         raise ValueError(f"Market {req.market} not found")
@@ -240,7 +244,6 @@ def _window_net_pnl(start_equity: float, equity_curve: list[dict]) -> float:
 @router.post("/backtests/runs", status_code=202)
 async def create_backtest_run(
     req: BacktestRunRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     _validate_backtest_request(req)
@@ -255,9 +258,8 @@ async def create_backtest_run(
         status="pending",
     )
     db.add(run)
-    await db.flush()
+    await db.commit()
     run_id = run.id
-    background_tasks.add_task(_run_backtest, run_id, req)
     return {"run_id": run_id, "status": "pending"}
 
 
@@ -266,7 +268,15 @@ async def list_backtest_runs(
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
 ):
-    runs = (await db.execute(select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit))).scalars().all()
+    runs = (
+        (
+            await db.execute(
+                select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_serialize_run(run) for run in runs]
 
 
@@ -280,7 +290,9 @@ async def get_backtest_run(run_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/backtests/runs/{run_id}/metrics")
 async def get_backtest_metrics(run_id: int, db: AsyncSession = Depends(get_db)):
-    metrics = await db.execute(select(BacktestMetrics).where(BacktestMetrics.run_id == run_id))
+    metrics = await db.execute(
+        select(BacktestMetrics).where(BacktestMetrics.run_id == run_id)
+    )
     m = metrics.scalar_one_or_none()
     if not m:
         raise HTTPException(404, "Metrics not found")
@@ -313,7 +325,9 @@ async def get_backtest_trades(run_id: int, db: AsyncSession = Depends(get_db)):
     for trade, market in rows:
         hold_minutes = 0.0
         if trade.exit_ts is not None:
-            hold_minutes = max((trade.exit_ts - trade.entry_ts).total_seconds() / 60, 0.0)
+            hold_minutes = max(
+                (trade.exit_ts - trade.entry_ts).total_seconds() / 60, 0.0
+            )
         payload.append(
             {
                 "id": trade.id,
@@ -325,7 +339,9 @@ async def get_backtest_trades(run_id: int, db: AsyncSession = Depends(get_db)):
                 "qty": trade.qty,
                 "pnl": trade.pnl,
                 "fee": trade.fee,
-                "return_pct": _compute_return_pct(trade.pnl, trade.fee, trade.entry_price, trade.qty),
+                "return_pct": _compute_return_pct(
+                    trade.pnl, trade.fee, trade.entry_price, trade.qty
+                ),
                 "hold_minutes": hold_minutes,
             }
         )
@@ -339,12 +355,16 @@ async def get_backtest_windows(run_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Backtest run not found")
 
     windows = (
-        await db.execute(
-            select(BacktestWindow)
-            .where(BacktestWindow.run_id == run_id)
-            .order_by(BacktestWindow.window_seq.asc())
+        (
+            await db.execute(
+                select(BacktestWindow)
+                .where(BacktestWindow.run_id == run_id)
+                .order_by(BacktestWindow.window_seq.asc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_serialize_window(window) for window in windows]
 
 
@@ -403,7 +423,9 @@ async def _run_walk_forward_backtest(
     if not aggregated_equity_curve:
         raise ValueError("Insufficient candle data for walk-forward backtesting")
 
-    aggregate_result = engine._compute_metrics(aggregated_trades, aggregated_equity_curve, req.initial_equity)
+    aggregate_result = engine._compute_metrics(
+        aggregated_trades, aggregated_equity_curve, req.initial_equity
+    )
     return aggregate_result, windows_payload
 
 
@@ -422,9 +444,16 @@ async def _run_backtest(run_id: int, req: BacktestRunRequest):
             engine = _build_engine(req)
 
             if req.mode.lower() == "walk_forward":
-                result, windows_payload = await _run_walk_forward_backtest(req, engine, df)
+                result, windows_payload = await _run_walk_forward_backtest(
+                    req, engine, df
+                )
             else:
-                result = await _run_single_backtest(engine, df.loc[(df["ts"] >= req.test_from) & (df["ts"] <= req.test_to)].reset_index(drop=True))
+                result = await _run_single_backtest(
+                    engine,
+                    df.loc[
+                        (df["ts"] >= req.test_from) & (df["ts"] <= req.test_to)
+                    ].reset_index(drop=True),
+                )
                 windows_payload = [
                     {
                         "window_seq": 1,
@@ -433,8 +462,12 @@ async def _run_backtest(run_id: int, req: BacktestRunRequest):
                         "test_from": req.test_from,
                         "test_to": req.test_to,
                         "start_equity": req.initial_equity,
-                        "end_equity": result.equity_curve[-1]["equity"] if result.equity_curve else req.initial_equity,
-                        "net_pnl": _window_net_pnl(req.initial_equity, result.equity_curve),
+                        "end_equity": result.equity_curve[-1]["equity"]
+                        if result.equity_curve
+                        else req.initial_equity,
+                        "net_pnl": _window_net_pnl(
+                            req.initial_equity, result.equity_curve
+                        ),
                         "result": result,
                     }
                 ]
