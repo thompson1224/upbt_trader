@@ -1202,19 +1202,41 @@ async def test_get_daily_report_history_returns_latest_snapshots_first():
     )
 
     class _HistoryDB:
+        def __init__(self):
+            self.runtime_states = {
+                state_new.key: state_new,
+                state_old.key: state_old,
+            }
+            self.commits = 0
+
         async def execute(self, statement):
             entity = statement.column_descriptions[0]["entity"]
             if entity is RuntimeState:
                 return _FakeRowsResult([state_new, state_old])
             raise AssertionError(f"Unexpected entity: {entity}")
 
-    response = await portfolio_module.get_daily_report_history(limit=7, db=_HistoryDB())
+        async def get(self, model, key):
+            if model is RuntimeState:
+                return self.runtime_states.get(key)
+            raise AssertionError(f"Unexpected model: {model}")
+
+        def add(self, instance):
+            if isinstance(instance, RuntimeState):
+                self.runtime_states[instance.key] = instance
+                return
+            raise AssertionError(f"Unexpected add: {instance}")
+
+        async def commit(self):
+            self.commits += 1
+    db = _HistoryDB()
+    response = await portfolio_module.get_daily_report_history(limit=7, db=db)
 
     assert [row["date"] for row in response] == ["20260326", "20260325"]
+    assert db.commits == 0
 
 
 @pytest.mark.asyncio
-async def test_get_daily_report_history_backfills_recomputable_fields():
+async def test_backfill_daily_report_history_updates_snapshots_and_runtime_daily_pnl(monkeypatch: pytest.MonkeyPatch):
     buy_fill = SimpleNamespace(
         id=1,
         price=100.0,
@@ -1296,17 +1318,27 @@ async def test_get_daily_report_history_backfills_recomputable_fields():
         async def commit(self):
             return None
 
-    db = _HistoryBackfillDB()
-    response = await portfolio_module.get_daily_report_history(limit=7, db=db)
+    audit_calls = []
 
-    assert len(response) == 1
-    assert response[0]["summary"]["dailyPnl"] == pytest.approx(response[0]["summary"]["netPnl"])
-    assert response[0]["summary"]["runtimeRiskDailyPnl"] == pytest.approx(response[0]["summary"]["dailyPnl"])
-    assert response[0]["summary"]["openPositions"] == 2
-    assert response[0]["positions"][0]["market"] == "KRW-ETH"
-    assert response[0]["byExitReason"][0]["exitReason"] == "take_profit"
+    async def _fake_record_audit_event(**kwargs):
+        audit_calls.append(kwargs)
+
+    monkeypatch.setattr(portfolio_module, "record_audit_event", _fake_record_audit_event)
+
+    db = _HistoryBackfillDB()
+    response = await portfolio_module.backfill_daily_report_history(limit=7, db=db)
+
+    updated_snapshot = json.loads(db.runtime_states[snapshot_state.key].value)
+
+    assert response == {"processed": 1, "updated": 1, "failed": []}
+    assert updated_snapshot["summary"]["dailyPnl"] == pytest.approx(updated_snapshot["summary"]["netPnl"])
+    assert updated_snapshot["summary"]["runtimeRiskDailyPnl"] == pytest.approx(updated_snapshot["summary"]["dailyPnl"])
+    assert updated_snapshot["summary"]["openPositions"] == 2
+    assert updated_snapshot["positions"][0]["market"] == "KRW-ETH"
+    assert updated_snapshot["byExitReason"][0]["exitReason"] == "take_profit"
     assert json.loads(db.runtime_states[snapshot_state.key].value)["summary"]["dailyPnl"] != 9999.0
-    assert float(db.runtime_states[risk_daily_state.key].value) == pytest.approx(response[0]["summary"]["dailyPnl"])
+    assert float(db.runtime_states[risk_daily_state.key].value) == pytest.approx(updated_snapshot["summary"]["dailyPnl"])
+    assert audit_calls[0]["event_type"] == "daily_report_backfilled"
 
 
 async def _noop():

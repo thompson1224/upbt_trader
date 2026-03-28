@@ -1243,15 +1243,44 @@ async def get_daily_report_history(
         .limit(limit)
     )
     rows = (await db.execute(stmt)).scalars().all()
-    payloads = []
+    return [json.loads(row.value) for row in rows]
+
+
+@router.post("/portfolio/daily-report/backfill")
+async def backfill_daily_report_history(
+    limit: int = Query(7, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(RuntimeState)
+        .where(RuntimeState.key.like(f"{DAILY_REPORT_RUNTIME_STATE_PREFIX}%"))
+        .order_by(RuntimeState.key.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    updated = 0
+    failed: list[str] = []
+
     for row in rows:
         payload = json.loads(row.value)
         date_key = str(payload.get("date") or row.key.removeprefix(DAILY_REPORT_RUNTIME_STATE_PREFIX))
         try:
-            payload = await _backfill_daily_report_payload(db, date_key=date_key, payload=payload)
-            if row.value != json.dumps(payload):
-                await _persist_daily_report_snapshot(db, date_key, payload)
+            updated_payload = await _backfill_daily_report_payload(db, date_key=date_key, payload=payload)
+            if row.value != json.dumps(updated_payload):
+                await _persist_daily_report_snapshot(db, date_key, updated_payload)
+                updated += 1
         except Exception:
-            pass
-        payloads.append(payload)
-    return payloads
+            failed.append(date_key)
+
+    await record_audit_event(
+        event_type="daily_report_backfilled",
+        source="portfolio",
+        message=f"Daily report backfill run for {len(rows)} snapshots",
+        payload={"limit": limit, "updated": updated, "failed": failed},
+    )
+
+    return {
+        "processed": len(rows),
+        "updated": updated,
+        "failed": failed,
+    }
