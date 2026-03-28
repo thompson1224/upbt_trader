@@ -111,3 +111,42 @@ docker compose logs backtest --tail=20
 1. **execution_service**는 여전히 로컬 `PreTradeRiskGuard` 폴백을 유지합니다. RPC 실패 시 자동으로 로컬评估로 전환합니다.
 2. **백테스트 서비스**는 GPU가 필요 없는 CPU 기반 백테스트 엔진입니다. 대량의 데이터 처리가 가능합니다.
 3. **risk_service**는 `upbit:trade_event` 채널을 구독하여 실시간으로 체결 이벤트를 처리합니다.
+
+---
+
+## Threshold 최적화 (2026-03-29)
+
+### 배경
+- 기존 `min_buy_final_score` = 0.60으로 설정되어 있었음
+- 백테스트 분석 결과 0.60 이상 신호가 거의 발생하지 않음 (분석 기간 중 0건)
+- 시장 하락장에서 과도한 매수를 방지하기 위한 적정 값 연구 필요
+
+### 분석 결과 (2026-03-24 ~ 2026-03-28, KRW-BTC)
+
+| Threshold | 발생 가능 신호 수 |
+|-----------|-----------------|
+| 0.35 | 51 |
+| 0.40 | 43 |
+| 0.45 | 40 |
+| 0.50 | 9 |
+| 0.55+ | 0 |
+
+### 결정
+**`min_buy_final_score` = 0.40**으로 조정 (2026-03-29)
+
+이유:
+1. 0.40 이상 신호가 충분히 발생 (43개/일)
+2. 시장 하락 시 과도한 매수 방지
+3. 너무 높으면 거래 기회 상실 (0.60은 현실적이지 않음)
+
+### 설정 변경
+```bash
+# 현재 설정 확인
+curl http://localhost:8001/api/v1/settings/min-buy-final-score
+# {"value": 0.4}
+
+# 설정 변경
+curl -X PATCH http://localhost:8001/api/v1/settings/min-buy-final-score \
+  -H "Content-Type: application/json" \
+  -d '{"value": 0.40}'
+```
