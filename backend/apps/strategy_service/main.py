@@ -1,5 +1,6 @@
 from __future__ import annotations
-"""전략 서비스 - 1분봉 수신 → 지표 계산 → Fear&Greed 감성 → 추세 필터 → 신호 생성"""
+
+"""전략 서비스 - 1분봉 수신 → 지표 계산 → Groq 감성 분석 → 추세 필터 → 신호 생성"""
 import asyncio
 import json
 import logging
@@ -13,8 +14,16 @@ from sqlalchemy import select, desc, func
 
 from libs.config import get_settings
 from libs.db.session import get_session_factory
-from libs.db.models import Coin, Candle1m, IndicatorSnapshot, SentimentSnapshot, Signal, Position
+from libs.db.models import (
+    Coin,
+    Candle1m,
+    IndicatorSnapshot,
+    SentimentSnapshot,
+    Signal,
+    Position,
+)
 from libs.ai.fear_greed_client import FearGreedClient
+from libs.ai.groq_client import GroqClient, SentimentResult
 from apps.strategy_service.indicators.calculator import compute_indicators
 from apps.strategy_service.fusion.signal_fusion import fuse_signals, FusedSignal
 
@@ -25,13 +34,13 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_ID = "hybrid_v1"
 TIMEFRAME = "1m"
-CANDLE_WINDOW = 200          # 지표 계산에 필요한 캔들 수
-TOP_MARKETS_BY_VOLUME = 10   # 24h 거래량 상위 N개 코인만 처리
+CANDLE_WINDOW = 200  # 지표 계산에 필요한 캔들 수
+TOP_MARKETS_BY_VOLUME = 10  # 24h 거래량 상위 N개 코인만 처리
 EXCLUDED_MARKETS_REDIS_KEY = "settings:excluded_markets"
 
 # 1시간봉 추세 필터: EMA12/EMA30 비율 기준
-HOURLY_CANDLES = 60          # 1분봉 60개 = 1시간
-TREND_BAND = 0.002           # 0.2% 이내는 횡보로 판단
+HOURLY_CANDLES = 60  # 1분봉 60개 = 1시간
+TREND_BAND = 0.002  # 0.2% 이내는 횡보로 판단
 HELD_POSITION_FORCE_SELL_TA_SCORE = -0.15
 HELD_POSITION_DOWNTREND_SELL_TA_SCORE = -0.05
 POSITION_SOURCE_STRATEGY = "strategy"
@@ -50,7 +59,10 @@ def _apply_position_exit_overrides(
         return signal, "fused_sell"
     if ta_score <= HELD_POSITION_FORCE_SELL_TA_SCORE:
         return replace(signal, side="sell"), "held_position_ta_exit"
-    if hourly_trend == "downtrend" and ta_score <= HELD_POSITION_DOWNTREND_SELL_TA_SCORE:
+    if (
+        hourly_trend == "downtrend"
+        and ta_score <= HELD_POSITION_DOWNTREND_SELL_TA_SCORE
+    ):
         return replace(signal, side="sell"), "held_position_downtrend_exit"
     return replace(signal, side="hold"), "held_position_hold"
 
@@ -78,11 +90,14 @@ class StrategyRunner:
     def __init__(self):
         self.settings = get_settings()
         self.fear_greed = FearGreedClient()
+        self.groq = GroqClient()
         self.session_factory = get_session_factory()
         self._redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
         self._redis: aioredis.Redis | None = None
         self._last_signal: dict[str, str] = {}
         self._signal_streak: dict[str, int] = {}
+        self._groq_cache: dict[str, tuple[SentimentResult, datetime]] = {}
+        self._groq_cache_ttl = timedelta(minutes=30)
 
     async def _get_redis(self) -> aioredis.Redis:
         """Redis 클라이언트 반환. stale 연결이면 재생성."""
@@ -107,7 +122,11 @@ class StrategyRunner:
             if isinstance(payload, list):
                 return {market.upper() for market in payload}
             items = payload.get("items", []) if isinstance(payload, dict) else []
-            return {str(item.get("market", "")).upper() for item in items if str(item.get("market", "")).strip()}
+            return {
+                str(item.get("market", "")).upper()
+                for item in items
+                if str(item.get("market", "")).strip()
+            }
         except Exception:
             logger.warning("Invalid excluded market payload, ignoring")
             return set()
@@ -143,7 +162,8 @@ class StrategyRunner:
                 .order_by(desc(vol_subq.c.vol_24h))
             )
             coins = [
-                coin for coin in result.scalars().all()
+                coin
+                for coin in result.scalars().all()
                 if coin.market not in excluded_markets
             ]
 
@@ -153,23 +173,97 @@ class StrategyRunner:
             len(excluded_markets),
         )
 
-        # Fear & Greed는 전 코인 공통 (하루 1회 업데이트, 1시간 캐시)
-        sentiment_score, sentiment_conf = await self.fear_greed.get_sentiment()
+        # Fear & Greed는 전 코인 공통 폴백 (Groq 실패 시 사용)
+        fear_greed_score, fear_greed_conf = await self.fear_greed.get_sentiment()
 
         batch_size = 5
         for i in range(0, len(coins), batch_size):
             batch = coins[i : i + batch_size]
             results = await asyncio.gather(
-                *[self._process_coin(coin, sentiment_score, sentiment_conf) for coin in batch],
+                *[
+                    self._process_coin(coin, fear_greed_score, fear_greed_conf)
+                    for coin in batch
+                ],
                 return_exceptions=True,
             )
             for coin, result in zip(batch, results):
                 if isinstance(result, Exception):
                     logger.error("Coin processing error [%s]: %s", coin.market, result)
             if i + batch_size < len(coins):
-                await asyncio.sleep(3)  # Groq 제거로 딜레이 단축 가능
+                await asyncio.sleep(3)
 
-    async def _process_coin(self, coin: Coin, sentiment_score: float, sentiment_conf: float):
+    async def _get_sentiment(
+        self,
+        coin: Coin,
+        current_price: float,
+        ta_context: str,
+        fear_greed_score: float,
+        fear_greed_conf: float,
+    ) -> tuple[float, float, str]:
+        """
+        Groq로 코인별 감성 분석, 실패 시 FearGreed 폴백.
+        Returns: (sentiment_score, confidence, source)
+        """
+        market = coin.market
+        now = datetime.now(tz=timezone.utc)
+
+        if market in self._groq_cache:
+            cached_result, cached_at = self._groq_cache[market]
+            if now - cached_at < self._groq_cache_ttl:
+                return (
+                    cached_result["sentiment_score"],
+                    cached_result["confidence"],
+                    "groq_cached",
+                )
+
+        price_change_24h = 0.0
+        try:
+            async with self.session_factory() as db:
+                result = await db.execute(
+                    select(Candle1m)
+                    .where(Candle1m.coin_id == coin.id)
+                    .order_by(desc(Candle1m.ts))
+                    .limit(1440)
+                )
+                candles = list(reversed(result.scalars().all()))
+                if len(candles) >= 2:
+                    old_price = float(candles[0].close)
+                    if old_price > 0:
+                        price_change_24h = (
+                            (current_price - old_price) / old_price
+                        ) * 100
+        except Exception:
+            pass
+
+        groq_result = await self.groq.analyze_sentiment(
+            market=market,
+            current_price=current_price,
+            price_change_24h=price_change_24h,
+            volume_24h=0.0,
+            ta_context=ta_context,
+        )
+
+        if groq_result is not None:
+            self._groq_cache[market] = (groq_result, now)
+            logger.info(
+                "Groq sentiment [%s]: score=%.2f conf=%.2f summary=%s",
+                market,
+                groq_result["sentiment_score"],
+                groq_result["confidence"],
+                groq_result.get("summary", "")[:50],
+            )
+            return (
+                groq_result["sentiment_score"],
+                groq_result["confidence"],
+                "groq",
+            )
+
+        logger.warning("Groq failed for %s, using FearGreed fallback", market)
+        return (fear_greed_score, fear_greed_conf, "fear_greed")
+
+    async def _process_coin(
+        self, coin: Coin, fear_greed_score: float, fear_greed_conf: float
+    ):
         async with self.session_factory() as db:
             result = await db.execute(
                 select(Candle1m)
@@ -191,17 +285,33 @@ class StrategyRunner:
             and position.source == POSITION_SOURCE_STRATEGY
         )
 
-        df = pd.DataFrame([
-            {
-                "ts": c.ts, "open": c.open, "high": c.high,
-                "low": c.low, "close": c.close,
-                "volume": c.volume, "value": c.value,
-            }
-            for c in candles
-        ])
+        df = pd.DataFrame(
+            [
+                {
+                    "ts": c.ts,
+                    "open": c.open,
+                    "high": c.high,
+                    "low": c.low,
+                    "close": c.close,
+                    "volume": c.volume,
+                    "value": c.value,
+                }
+                for c in candles
+            ]
+        )
 
-        # 기술적 지표 계산
         ind = compute_indicators(df)
+
+        current_price = float(df["close"].iloc[-1])
+        ta_context = f"RSI={ind.rsi:.1f}, MACD={ind.macd:.2f}, BB_pct={ind.bb_pct:.2f}"
+
+        sentiment_score, sentiment_conf, sentiment_source = await self._get_sentiment(
+            coin=coin,
+            current_price=current_price,
+            ta_context=ta_context,
+            fear_greed_score=fear_greed_score,
+            fear_greed_conf=fear_greed_conf,
+        )
 
         # 지표 스냅샷 저장
         async with self.session_factory() as db:
@@ -224,10 +334,8 @@ class StrategyRunner:
             db.add(snapshot)
             await db.commit()
 
-        # Phase 3: 1시간봉 추세 필터
         hourly_trend = _compute_hourly_trend(df)
 
-        # 신호 융합
         signal = fuse_signals(
             ta_score=ind.ta_score,
             sentiment_score=sentiment_score,
@@ -265,7 +373,6 @@ class StrategyRunner:
             return
 
         # 신호 저장
-        current_price = float(df["close"].iloc[-1])
         stop_loss = current_price * (1 - 0.03) if signal.side == "buy" else None
         take_profit = current_price * (1 + 0.06) if signal.side == "buy" else None
 
@@ -294,39 +401,55 @@ class StrategyRunner:
 
         logger.info(
             "Signal generated: %s %s score=%.2f conf=%.2f trend=%s holding=%s override=%s",
-            coin.market, signal.side, signal.final_score,
-            signal.confidence, hourly_trend, has_open_position, override_reason,
+            coin.market,
+            signal.side,
+            signal.final_score,
+            signal.confidence,
+            hourly_trend,
+            has_open_position,
+            override_reason,
         )
 
         # Redis로 신호 브로드캐스트
         try:
             r = await self._get_redis()
-            await r.publish("upbit:signal", json.dumps({
-                "id": db_signal.id,
-                "market": coin.market,
-                "coinId": coin.id,
-                "side": signal.side,
-                "taScore": signal.ta_score,
-                "sentimentScore": signal.sentiment_score,
-                "finalScore": signal.final_score,
-                "confidence": signal.confidence,
-                "trend": hourly_trend,
-                "ts": datetime.now(tz=timezone.utc).isoformat(),
-            }))
+            await r.publish(
+                "upbit:signal",
+                json.dumps(
+                    {
+                        "id": db_signal.id,
+                        "market": coin.market,
+                        "coinId": coin.id,
+                        "side": signal.side,
+                        "taScore": signal.ta_score,
+                        "sentimentScore": signal.sentiment_score,
+                        "finalScore": signal.final_score,
+                        "confidence": signal.confidence,
+                        "trend": hourly_trend,
+                        "ts": datetime.now(tz=timezone.utc).isoformat(),
+                    }
+                ),
+            )
         except Exception as e:
             logger.warning("Failed to publish signal to Redis: %s", e)
 
-        # Fear & Greed 감성 DB 저장 (코인별 1회 공통 저장 — 첫 신호 발행 시)
+        # 감성 스냅샷 저장 (source에 groq/fear_greed 표시)
         try:
             async with self.session_factory() as db:
+                model_version = (
+                    "groq/llama-3.1-8b-instant"
+                    if sentiment_source == "groq"
+                    else "alternative.me/fng/v1"
+                )
+                summary = f"Source: {sentiment_source}"
                 snap = SentimentSnapshot(
                     coin_id=coin.id,
                     ts=datetime.now(tz=timezone.utc),
-                    source="fear_greed",
+                    source=sentiment_source,
                     sentiment_score=sentiment_score,
                     confidence=sentiment_conf,
-                    model_version="alternative.me/fng/v1",
-                    summary=f"Fear&Greed index ~{self.fear_greed.last_index_value}",
+                    model_version=model_version,
+                    summary=summary,
                     keywords=None,
                 )
                 db.add(snap)
