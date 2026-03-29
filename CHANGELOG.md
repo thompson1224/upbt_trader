@@ -150,3 +150,38 @@ curl -X PATCH http://localhost:8001/api/v1/settings/min-buy-final-score \
   -H "Content-Type: application/json" \
   -d '{"value": 0.40}'
 ```
+
+---
+
+## 오늘 작업 요약 (2026-03-29)
+
+### 완료된 작업
+
+| 작업 | 커밋 | 상태 |
+|------|------|------|
+| Risk service 구현 | `2c6164b` | ✅ |
+| Backtest service 구현 | `4f4cb82` | ✅ |
+| Threshold 최적화 (0.60→0.40) | `3319f9f` | ✅ |
+| Groq 감성 분석 통합 | `c4232ed` | ✅ |
+| DESIGN.md 작성 | `19c73ec` | ✅ |
+
+### 현재 시스템 상태
+
+- **Risk Service**: healthy ✅
+- **Auto-trade**: ON ✅
+- **일일 손익**: 0원
+- **연속 손실**: 0
+- **min_buy_final_score**: 0.40
+
+### 시장 상황
+
+- TA 점수가 약세 구간 (0에 가까움)
+- Groq 감성 분석: BTC -0.8 (부정적)
+- Threshold (0.40)达标 신호 없음
+- **시스템 정상 작동 중** - 시장 회복 시 자동 거래 발생
+
+### 다음 우선순위 작업
+
+1. **거래 모니터링** - threshold + Groq 효과 실시간 확인
+2. **WebSocket 재연결 로직 보강** - 네트워크 단절 복구
+3. **단위 테스트 작성** - 신규 서비스 테스트 Coverage
