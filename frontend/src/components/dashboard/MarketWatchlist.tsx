@@ -1,4 +1,5 @@
 "use client";
+import { useShallow } from "zustand/react/shallow";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
@@ -11,7 +12,12 @@ const TOP_MARKETS = [
 ];
 
 export default function MarketWatchlist() {
-  const tickers = useMarketStore((s) => s.tickers);
+  // useShallow: TOP_MARKETS 8개의 ticker만 구독 → 관련 없는 코인 tick 시 리렌더링 없음
+  const tickers = useMarketStore(
+    useShallow((s) =>
+      Object.fromEntries(TOP_MARKETS.map((m) => [m, s.tickers[m]]))
+    )
+  );
   const selectedMarket = useMarketStore((s) => s.selectedMarket);
   const setSelectedMarket = useMarketStore((s) => s.setSelectedMarket);
   const { data: excludedMarketState } = useQuery<ExcludedMarketState>({

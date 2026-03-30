@@ -24,9 +24,19 @@ export const useMarketStore = create<MarketState>((set) => ({
   minConfidence: 0.5,
 
   updateTicker: (data) =>
-    set((state) => ({
-      tickers: { ...state.tickers, [data.code]: data },
-    })),
+    set((state) => {
+      const prev = state.tickers[data.code];
+      // 가격·변화율이 동일하면 객체 참조를 유지해 불필요한 리렌더링 방지
+      if (
+        prev &&
+        prev.tradePrice === data.tradePrice &&
+        prev.changeRate === data.changeRate &&
+        prev.change === data.change
+      ) {
+        return state;
+      }
+      return { tickers: { ...state.tickers, [data.code]: data } };
+    }),
 
   setSelectedMarket: (market) => set({ selectedMarket: market }),
 

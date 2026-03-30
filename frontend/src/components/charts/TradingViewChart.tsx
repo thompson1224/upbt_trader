@@ -1,8 +1,17 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useMarketStore } from "@/store/useMarketStore";
 import { api } from "@/services/api";
 import type { CandleData } from "@/types/market";
+
+/** 현재 분봉 OHLC 상태 (실시간 업데이트 시 고/저가 추적) */
+interface LiveCandle {
+  time: number; // Unix seconds, 분 단위 정규화
+  open: number;
+  high: number;
+  low: number;
+}
 
 type IChartApi = import("lightweight-charts").IChartApi;
 type ISeriesApi = import("lightweight-charts").ISeriesApi<"Candlestick">;
@@ -13,8 +22,12 @@ export default function TradingViewChart() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi | null>(null);
+  const liveCandleRef = useRef<LiveCandle | null>(null);
   const selectedMarket = useMarketStore((s) => s.selectedMarket);
-  const tickers = useMarketStore((s) => s.tickers);
+  // useShallow: 선택된 마켓 ticker만 구독 → 다른 마켓 tick 시 리렌더링 없음
+  const ticker = useMarketStore(
+    useShallow((s) => s.tickers[s.selectedMarket] ?? null)
+  );
   const [timeframe, setTimeframe] = useState("1m");
   const [isChartReady, setIsChartReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -92,10 +105,11 @@ export default function TradingViewChart() {
     };
   }, []);
 
-  // 캔들 데이터 로드
+  // 캔들 데이터 로드 (마켓/타임프레임 변경 시 liveCandleRef 초기화)
   useEffect(() => {
     if (!isChartReady || !candleSeriesRef.current) return;
 
+    liveCandleRef.current = null; // 새 데이터 로드 전 live 상태 초기화
     setIsLoading(true);
     setLoadError(null);
     api.markets
@@ -110,6 +124,12 @@ export default function TradingViewChart() {
           close: c.close,
         }));
         candleSeriesRef.current.setData(data);
+        // 마지막 캔들을 live 초기값으로 설정
+        const last = candles[candles.length - 1];
+        if (last) {
+          const lastTime = Math.floor(new Date(last.ts).getTime() / 1000 / 60) * 60;
+          liveCandleRef.current = { time: lastTime, open: last.open, high: last.high, low: last.low };
+        }
       })
       .catch((error) => {
         console.error(error);
@@ -118,19 +138,34 @@ export default function TradingViewChart() {
       .finally(() => setIsLoading(false));
   }, [isChartReady, selectedMarket, timeframe]);
 
-  // 실시간 가격 업데이트
+  // 실시간 가격 업데이트 — High/Low 유지하여 캔들 꼬리 정확하게 표현
   useEffect(() => {
-    const ticker = tickers[selectedMarket];
     if (!ticker || !candleSeriesRef.current) return;
 
+    const candleTime = Math.floor(ticker.timestamp / 1000 / 60) * 60;
+    const price = ticker.tradePrice;
+    const prev = liveCandleRef.current;
+
+    if (!prev || prev.time !== candleTime) {
+      // 새 분봉 시작: open = 이전 close (연속성), high/low 초기화
+      liveCandleRef.current = { time: candleTime, open: price, high: price, low: price };
+    } else {
+      // 같은 분봉: high/low 갱신, open 유지
+      liveCandleRef.current = {
+        ...prev,
+        high: Math.max(prev.high, price),
+        low: Math.min(prev.low, price),
+      };
+    }
+
     candleSeriesRef.current.update({
-      time: (Math.floor(ticker.timestamp / 1000 / 60) * 60) as import("lightweight-charts").Time,
-      open: ticker.tradePrice,
-      high: ticker.tradePrice,
-      low: ticker.tradePrice,
-      close: ticker.tradePrice,
+      time: candleTime as import("lightweight-charts").Time,
+      open: liveCandleRef.current.open,
+      high: liveCandleRef.current.high,
+      low: liveCandleRef.current.low,
+      close: price,
     });
-  }, [tickers, selectedMarket]);
+  }, [ticker]);
 
   return (
     <div className="flex flex-col h-full">

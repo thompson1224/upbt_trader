@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useShallow } from "zustand/react/shallow";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useMarketStore } from "@/store/useMarketStore";
@@ -17,7 +18,13 @@ export default function PositionPanel() {
     queryFn: () => api.settings.getExcludedMarkets(),
     refetchInterval: 30_000,
   });
-  const tickers = useMarketStore((s) => s.tickers);
+  // useShallow: 보유 포지션 마켓만 구독 → 무관한 코인 tick 시 리렌더링 없음
+  const positionMarkets = positions.map((p) => p.market);
+  const tickers = useMarketStore(
+    useShallow((s) =>
+      Object.fromEntries(positionMarkets.map((m) => [m, s.tickers[m]]))
+    )
+  );
   const excludedMarkets = excludedMarketState?.markets ?? [];
   const excludedReasonMap = new Map(
     (excludedMarketState?.items ?? []).map((item) => [item.market, item.reason] as const)

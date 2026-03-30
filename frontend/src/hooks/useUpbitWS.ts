@@ -6,6 +6,12 @@ import { useNotificationStore, NotificationType } from "@/store/useNotificationS
 import { EquityCurvePoint, TickerData, SignalData } from "@/types/market";
 import { api, mapSignalData } from "@/services/api";
 
+/** 지수 백오프 재연결 지연 (1s → 2s → 4s ... 최대 30s, ±20% jitter) */
+function getReconnectDelay(attempt: number): number {
+  const delay = Math.min(1_000 * Math.pow(2, attempt), 30_000);
+  return Math.round(delay * (0.8 + Math.random() * 0.4));
+}
+
 const DEFAULT_GATEWAY_PORT = process.env.NEXT_PUBLIC_GATEWAY_PORT || "8001";
 const FALLBACK_WS_BASE = process.env.NEXT_PUBLIC_WS_URL || `ws://localhost:${DEFAULT_GATEWAY_PORT}`;
 
@@ -51,6 +57,7 @@ function mapTickerPayload(data: Record<string, unknown>): TickerData {
 export function useUpbitMarketWS(codes: string[]) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCount = useRef(0);
   const updateTicker = useMarketStore((s) => s.updateTicker);
   const setConnected = useMarketStore((s) => s.setConnected);
 
@@ -67,6 +74,7 @@ export function useUpbitMarketWS(codes: string[]) {
 
       ws.onopen = () => {
         if (!isActive) return;
+        retryCount.current = 0; // 연결 성공 시 재시도 카운터 초기화
         setConnected(true);
         const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send("ping");
@@ -87,7 +95,9 @@ export function useUpbitMarketWS(codes: string[]) {
       ws.onclose = () => {
         if (!isActive) return;
         setConnected(false);
-        reconnectTimer.current = setTimeout(connect, 3_000);
+        const delay = getReconnectDelay(retryCount.current);
+        retryCount.current += 1;
+        reconnectTimer.current = setTimeout(connect, delay);
       };
 
       ws.onerror = () => {
@@ -128,10 +138,13 @@ export function useSignalWS() {
     };
     loadInitialSignals();
 
+    let retryCount = 0;
     const connect = () => {
       if (!isActive) return;
       const ws = new WebSocket(`${wsBaseUrl}/ws/signals`);
       wsRef.current = ws;
+
+      ws.onopen = () => { retryCount = 0; };
 
       ws.onmessage = (e) => {
         try {
@@ -144,7 +157,7 @@ export function useSignalWS() {
 
       ws.onclose = () => {
         if (!isActive) return;
-        reconnectTimer.current = setTimeout(connect, 3_000);
+        reconnectTimer.current = setTimeout(connect, getReconnectDelay(retryCount++));
       };
 
       ws.onerror = () => {
@@ -179,9 +192,12 @@ export function useTradeEventWS() {
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
+    let retryCount = 0;
     const connect = () => {
       if (!isActive) return;
       ws = new WebSocket(`${wsBaseUrl}/ws/trade-events`);
+
+      ws.onopen = () => { retryCount = 0; };
 
       ws.onmessage = (e) => {
         try {
@@ -202,7 +218,7 @@ export function useTradeEventWS() {
 
       ws.onclose = () => {
         if (!isActive) return;
-        reconnectTimer = setTimeout(connect, 3_000);
+        reconnectTimer = setTimeout(connect, getReconnectDelay(retryCount++));
       };
       ws.onerror = () => ws.close();
     };
@@ -245,6 +261,7 @@ export function usePortfolioWS() {
       }
     };
 
+    let retryCount = 0;
     const connect = () => {
       if (!isActive) return;
       ws = new WebSocket(`${wsBaseUrl}/ws/portfolio`);
@@ -263,6 +280,7 @@ export function usePortfolioWS() {
       };
 
       ws.onopen = () => {
+        retryCount = 0;
         const pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send("ping");
         }, 30_000);
@@ -271,7 +289,7 @@ export function usePortfolioWS() {
 
       ws.onclose = () => {
         if (!isActive) return;
-        reconnectTimer = setTimeout(connect, 3_000);
+        reconnectTimer = setTimeout(connect, getReconnectDelay(retryCount++));
       };
       ws.onerror = () => ws.close();
     };

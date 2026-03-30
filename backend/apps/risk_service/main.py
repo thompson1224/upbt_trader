@@ -307,13 +307,14 @@ class RiskService:
         """체결 이벤트에서 P&L 추적."""
         try:
             async with self.session_factory() as db:
+                # bid(매수) + ask(매도) 모두 조회해야 FIFO 매칭으로 P&L 계산 가능
+                # filled_at ASC 정렬: 시간순 FIFO 매칭을 위해 오름차순 필수
                 result = await db.execute(
                     select(Fill, Order, Coin.market)
                     .join(Order, Fill.order_id == Order.id)
                     .join(Coin, Order.coin_id == Coin.id)
-                    .where(Order.side == "ask")
-                    .order_by(Fill.filled_at.desc())
-                    .limit(100)
+                    .order_by(Fill.filled_at.asc())
+                    .limit(500)
                 )
                 rows = result.all()
 

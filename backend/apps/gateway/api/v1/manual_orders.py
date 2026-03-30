@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.execution_service.main import MANUAL_TEST_STRATEGY_ID
 from apps.gateway.api.v1.settings import MANUAL_TEST_MODE_REDIS_KEY
+from apps.gateway.auth import require_auth
 from libs.audit import record_audit_event
 from libs.db.models import Coin, Signal
 from libs.db.session import get_db
@@ -45,7 +46,7 @@ class ManualOrderRequest(BaseModel):
     take_profit: Optional[float] = None
 
 
-@router.post("/manual-orders")
+@router.post("/manual-orders", dependencies=[Depends(require_auth)])
 async def create_manual_order(
     req: ManualOrderRequest,
     db: AsyncSession = Depends(get_db),

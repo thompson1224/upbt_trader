@@ -6,8 +6,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from apps.gateway.auth import require_auth
 from libs.config import get_settings
 
 router = APIRouter()
@@ -97,7 +98,7 @@ async def get_risk_status():
         await r.aclose()
 
 
-@router.post("/risk/reset-daily-pnl")
+@router.post("/risk/reset-daily-pnl", dependencies=[Depends(require_auth)])
 async def reset_daily_pnl():
     """일일 손익을 0으로 초기화 (새 거래일 시작 시 사용)."""
     r = _get_redis()

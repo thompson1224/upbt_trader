@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from apps.gateway.api.v1 import (
     audit,
@@ -17,19 +18,19 @@ from apps.gateway.api.v1 import (
     settings as settings_router,
     signals,
 )
+from apps.gateway.auth import router as auth_router
 from apps.gateway.ws import market_ws, signal_ws, order_ws, trade_event_ws
 from libs.config import get_settings
 from libs.db.session import get_engine
-from libs.db.models import Base
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 시작: DB 테이블 생성 (Alembic 마이그레이션 사용 전 개발용)
-    settings = get_settings()
+    # 스키마 변경은 Alembic 마이그레이션으로만 관리 (create_all 제거)
+    # 시작 시 DB 연결 확인만 수행
     engine = get_engine()
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("SELECT 1"))
 
     # Redis → WebSocket 브릿지 시작
     import asyncio
@@ -68,6 +69,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 인증 라우터
+    app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 
     # REST 라우터
     prefix = "/api/v1"

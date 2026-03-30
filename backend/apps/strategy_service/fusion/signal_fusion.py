@@ -1,15 +1,16 @@
 from __future__ import annotations
 from typing import Optional
+
 """TA 점수 + LLM 감성 점수 융합 → 최종 신호 생성"""
 from dataclasses import dataclass
 from typing import Literal
 
-TA_WEIGHT = 0.6
-SENTIMENT_WEIGHT = 0.4
+TA_WEIGHT = 0.8
+SENTIMENT_WEIGHT = 0.2
 
-BUY_THRESHOLD = 0.35    # 수수료(0.1%) 대비 수익 확보하면서 현 시장 조건 고려
+BUY_THRESHOLD = 0.35  # 수수료(0.1%) 대비 수익 확보하면서 현 시장 조건 고려
 SELL_THRESHOLD = -0.30  # 매도 신호 기준
-MIN_CONFIDENCE = 0.55   # 신뢰도 기준 강화
+MIN_CONFIDENCE = 0.55  # 신뢰도 기준 강화
 
 
 @dataclass

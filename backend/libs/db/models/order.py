@@ -1,8 +1,11 @@
+from decimal import Decimal
 from typing import Optional
-from sqlalchemy import Integer, Float, String, DateTime, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import Integer, Numeric, String, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import mapped_column, Mapped, relationship
 from datetime import datetime
 from .base import Base, TimestampMixin
+
+_PRICE_COL = Numeric(20, 8)
 
 
 class Order(Base, TimestampMixin):
@@ -19,8 +22,8 @@ class Order(Base, TimestampMixin):
     exchange_order_id: Mapped[Optional[str]] = mapped_column(String(100), unique=True, nullable=True)
     side: Mapped[str] = mapped_column(String(10), nullable=False)  # bid/ask
     ord_type: Mapped[str] = mapped_column(String(20), nullable=False)  # limit/price/market
-    price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    volume: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price: Mapped[Optional[Decimal]] = mapped_column(_PRICE_COL, nullable=True)
+    volume: Mapped[Optional[Decimal]] = mapped_column(_PRICE_COL, nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="wait")
     # wait, watch, done, cancel
 
@@ -35,14 +38,15 @@ class Fill(Base):
     __tablename__ = "fills"
     __table_args__ = (
         Index("ix_fills_order_ts", "order_id", "filled_at"),
+        UniqueConstraint("order_id", "trade_uuid", name="uq_fills_order_trade_uuid"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False)
     trade_uuid: Mapped[str] = mapped_column(String(100), nullable=False)
-    price: Mapped[float] = mapped_column(Float, nullable=False)
-    volume: Mapped[float] = mapped_column(Float, nullable=False)
-    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    price: Mapped[Decimal] = mapped_column(_PRICE_COL, nullable=False)
+    volume: Mapped[Decimal] = mapped_column(_PRICE_COL, nullable=False)
+    fee: Mapped[Decimal] = mapped_column(_PRICE_COL, nullable=False, default=Decimal("0"))
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     order = relationship("Order", back_populates="fills")

@@ -7,10 +7,11 @@ from typing import Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
+from apps.gateway.auth import require_auth
 from libs.audit import record_audit_event
 from libs.config import get_settings
 from libs.db.models import RuntimeState
@@ -285,7 +286,7 @@ def _parse_blocked_buy_hour_blocks(raw: Optional[Union[bytes, str]]) -> List[str
 
 # ── Upbit API 키 ────────────────────────────────────────────
 
-@router.post("/secrets/upbit-keys", status_code=204)
+@router.post("/secrets/upbit-keys", status_code=204, dependencies=[Depends(require_auth)])
 async def set_upbit_keys(req: UpbitKeyRequest):
     """업비트 API 키 저장 (암호화)."""
     f = _get_fernet()
@@ -312,7 +313,7 @@ async def set_upbit_keys(req: UpbitKeyRequest):
 
 # ── Groq API 키 ─────────────────────────────────────────────
 
-@router.post("/secrets/groq-key", status_code=204)
+@router.post("/secrets/groq-key", status_code=204, dependencies=[Depends(require_auth)])
 async def set_groq_key(req: GroqKeyRequest):
     """Groq API 키 저장 (런타임 환경변수 업데이트). 반영은 서비스 재시작 필요."""
     os.environ["GROQ_API_KEY"] = req.api_key
@@ -352,7 +353,8 @@ async def get_auto_trade():
         val = await r.get(AUTO_TRADE_REDIS_KEY)
     finally:
         await r.aclose()
-    enabled = (val is None) or (val.decode() == "1")
+    # Redis 키 없으면 False (execution service 기본값과 일치)
+    enabled = val is not None and val.decode() == "1"
     return {"enabled": enabled}
 
 
